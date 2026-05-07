@@ -14,6 +14,7 @@ Lite personlig prosjekt for momentum-screening av aksjer.
 - Lager både CSV-rapport og kort Markdown-rapport
 - Legger til egen `Do-not-chase warning` for tickere som er kraftig opp, men langt under intradag-high
 - Inkluderer debug-felter i CSV som `day_change_source`, `spread_pct` og `spread_bps`
+- Viser hvilke Yahoo-lister hver aksje dukket opp i (f.eks. `[Top Gainers, Most Active]`)
 
 > Merk: `yfinance` er uoffisielt og kan bli rate-limitet eller endre seg hvis Yahoo endrer API/dataformat.
 > Premarket/after-hours-data kan være ufullstendig avhengig av Yahoo-tilgjengelighet.
@@ -23,12 +24,17 @@ Lite personlig prosjekt for momentum-screening av aksjer.
 ```bash
 pip install -r requirements.txt
 
-# Watchlist-modus (standard)
+# Watchlist-modus (personlige tickere)
 python screener.py --input watchlist.csv --outdir .
 
-# Yahoo screener-modus
+# Anbefalt daglig modus (bred dekning)
+python screener.py --source yahoo-expanded --limit 25 --outdir reports
+
+# Konservativ modus (kun momentum-signaler)
+python screener.py --source yahoo-momentum --limit 25 --outdir reports
+
+# Enkeltscreener (f.eks. Top Gainers)
 python screener.py --source yahoo-gainers --limit 25 --outdir reports
-python screener.py --source yahoo-all --limit 25 --outdir reports
 ```
 
 Eksempel på output-filer:
@@ -50,21 +56,38 @@ Eksempel på output-filer:
 
 ### Tilgjengelige kilder (`--source`)
 
+#### Grupperte kilder (henter fra flere screeners og deduplicerer)
+
 | Verdi | Beskrivelse |
 |---|---|
-| `watchlist` | Bruker `--input` CSV (standard) |
+| `watchlist` | Bruker `--input` CSV (standard) — watchlist-modus for personlige tickere |
+| `yahoo-expanded` | **Anbefalt daglig modus** — alle 10 Yahoo-screeners kombinert og deduplisert |
+| `yahoo-momentum` | **Konservativ modus** — 5 momentum-orienterte screeners (gainers, most-active, trending, unusual-volume, high-beta) |
+| `yahoo-all` | Alias for `yahoo-momentum` (beholdt for bakoverkompatibilitet) |
+
+#### Individuelle Yahoo-screeners
+
+| Verdi | Beskrivelse |
+|---|---|
 | `yahoo-gainers` | Top Gainers fra Yahoo Finance |
 | `yahoo-most-active` | Most Active fra Yahoo Finance |
 | `yahoo-trending` | Trending Now fra Yahoo Finance |
 | `yahoo-unusual-volume` | Unusual Volume fra Yahoo Finance |
 | `yahoo-high-beta` | High Beta Stocks fra Yahoo Finance |
-| `yahoo-all` | Alle fem Yahoo-screeners kombinert og deduplisert |
+| `yahoo-losers` | Top Losers fra Yahoo Finance |
+| `yahoo-oversold` | Oversold Stocks fra Yahoo Finance |
+| `yahoo-overbought` | Overbought Stocks fra Yahoo Finance |
+| `yahoo-52-week-gainers` | 52-Week Gainers fra Yahoo Finance |
+| `yahoo-all-time-high` | All-Time High Stocks fra Yahoo Finance |
 
-`yahoo-all` viser også hvilke lister hver aksje dukket opp i, f.eks.:
+Grupperte modus viser hvilke lister hver aksje dukket opp i, f.eks.:
 
 ```
 - NVDA [Top Gainers, Most Active]: score 80. green, volume > 2x ...
 ```
+
+> **Merk:** Noen Yahoo predefined screener-IDer kan returnere HTTP 404. Disse hoppes over med en advarsel
+> slik at resten av kjøringen fortsetter normalt.
 
 ## Watchlist-format
 
