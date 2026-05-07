@@ -394,6 +394,49 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     }
 
 
+def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
+    """Return a Series of setup bucket labels for each row.
+
+    A-list rows (score >= 70) are split into:
+    - A1: tradable strength (meets all quality filters)
+    - A2: strong but extended / wait (score >= 70 but fails one or more A1 filters)
+
+    B-list and C-list rows are labelled from their existing ``classification`` column.
+    """
+    day_change_numeric = pd.to_numeric(df.get("day_change_pct", 0), errors="coerce").fillna(0.0)
+    distance_from_high_numeric = pd.to_numeric(df.get("distance_from_high_pct", 0), errors="coerce").fillna(0.0)
+    score_numeric = pd.to_numeric(df.get("score", 0), errors="coerce").fillna(0)
+
+    vwap_numeric = pd.to_numeric(df.get("vwap", 0), errors="coerce").fillna(0.0)
+    last_numeric = pd.to_numeric(df.get("last", 0), errors="coerce").fillna(0.0)
+    above_vwap = last_numeric > vwap_numeric
+
+    sources_series = df.get("sources") if "sources" in df.columns else pd.Series([""] * len(df), index=df.index)
+    has_most_active = sources_series.astype(str).str.contains("Most Active", case=False, na=False)
+
+    in_do_not_chase = (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD) & (
+        distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD
+    )
+
+    a_score = score_numeric >= 70
+    a1_mask = (
+        a_score
+        & (~in_do_not_chase)
+        & (distance_from_high_numeric > -8)
+        & ((day_change_numeric < 25) | has_most_active)
+        & above_vwap
+    )
+    a2_mask = a_score & (~a1_mask)
+
+    classification = df.get("classification", pd.Series([""] * len(df), index=df.index)).astype(str)
+
+    result = pd.Series("C-list", index=df.index)
+    result[classification == "B-list"] = "B-list"
+    result[a2_mask] = "A2"
+    result[a1_mask] = "A1"
+    return result
+
+
 def format_markdown_report(df: pd.DataFrame) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [f"# Daily Momentum Report ({now})", ""]
@@ -410,32 +453,17 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     lines.append("> Heuristic note: lower-lows penalty uses a simple recent-candles pattern.")
     lines.append("")
 
-    # --- A1/A2 classification for the A-list (markdown output only) ---
-    day_change_numeric = pd.to_numeric(df.get("day_change_pct", 0), errors="coerce")
-    distance_from_high_numeric = pd.to_numeric(df.get("distance_from_high_pct", 0), errors="coerce")
-    score_numeric = pd.to_numeric(df.get("score", 0), errors="coerce").fillna(0)
+    # Re-compute (or use existing) setup_bucket for markdown sections
+    if "setup_bucket" not in df.columns:
+        df = df.copy()
+        df["setup_bucket"] = compute_setup_bucket(df)
 
-    vwap_numeric = pd.to_numeric(df.get("vwap", 0), errors="coerce")
-    last_numeric = pd.to_numeric(df.get("last", 0), errors="coerce")
-    above_vwap = last_numeric > vwap_numeric
-
-    sources_series = df.get("sources") if "sources" in df.columns else pd.Series([""] * len(df))
-    sources_str = sources_series.astype(str)
-    has_most_active = sources_str.str.contains("Most Active", case=False, na=False)
-
+    # Build in_do_not_chase mask for the warning section
+    day_change_numeric = pd.to_numeric(df.get("day_change_pct", 0), errors="coerce").fillna(0.0)
+    distance_from_high_numeric = pd.to_numeric(df.get("distance_from_high_pct", 0), errors="coerce").fillna(0.0)
     in_do_not_chase = (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD) & (
         distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD
     )
-
-    a_score = score_numeric >= 70
-    a1_mask = (
-        a_score
-        & (~in_do_not_chase)
-        & (distance_from_high_numeric > -8)
-        & ((day_change_numeric < 25) | has_most_active)
-        & above_vwap
-    )
-    a2_mask = a_score & (~a1_mask)
 
     labels = {
         "A1": "tradable strength",
@@ -445,10 +473,10 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     }
 
     sections: list[tuple[str, pd.Series]] = [
-        ("A1", a1_mask),
-        ("A2", a2_mask),
-        ("B-list", df["classification"] == "B-list"),
-        ("C-list", df["classification"] == "C-list"),
+        ("A1", df["setup_bucket"] == "A1"),
+        ("A2", df["setup_bucket"] == "A2"),
+        ("B-list", df["setup_bucket"] == "B-list"),
+        ("C-list", df["setup_bucket"] == "C-list"),
     ]
 
     for bucket, mask in sections:
@@ -606,6 +634,8 @@ def main() -> None:
     df = pd.DataFrame(rows)
     if "score" in df.columns:
         df = df.sort_values(by="score", ascending=False, na_position="last")
+
+    df["setup_bucket"] = compute_setup_bucket(df)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     csv_path = outdir / f"momentum_report_{stamp}.csv"
