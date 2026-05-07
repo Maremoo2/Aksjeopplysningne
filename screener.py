@@ -11,7 +11,7 @@ import yfinance as yf
 
 DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 20
 DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -8
-SPREAD_PENALTY_THRESHOLD_PCT = 0.30
+SPREAD_PENALTY_THRESHOLD_PERCENT = 0.30
 
 
 @dataclass
@@ -170,7 +170,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         score -= 20
         reasons.append("lower lows (heuristic)")
 
-    if spread_pct > SPREAD_PENALTY_THRESHOLD_PCT:
+    if spread_pct > SPREAD_PENALTY_THRESHOLD_PERCENT:
         score -= 15
         reasons.append("wide spread")
 
