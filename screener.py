@@ -116,11 +116,7 @@ def fetch_yahoo_screener(source_key: str, limit: int) -> list[dict[str, Any]]:
         raise RuntimeError(f"Invalid JSON from Yahoo screener '{source_key}': {exc}") from exc
 
     try:
-        quotes = (
-            data["finance"]["result"][0]["quotes"]
-            if data.get("finance", {}).get("result")
-            else []
-        )
+        quotes = data["finance"]["result"][0]["quotes"] if data.get("finance", {}).get("result") else []
     except (KeyError, IndexError, TypeError):
         quotes = []
 
@@ -178,9 +174,7 @@ def fetch_yahoo_all(limit: int) -> list[dict[str, Any]]:
                 seen[ticker] = entry
 
     if not any_success:
-        logger.error(
-            "All Yahoo screener fetches failed. Tip: run with --source watchlist instead."
-        )
+        logger.error("All Yahoo screener fetches failed. Tip: run with --source watchlist instead.")
         for err in errors:
             logger.error("  %s", err)
 
@@ -213,9 +207,7 @@ def apply_filters(
 
         mcap = entry.get("market_cap")
         if mcap is not None and mcap < min_market_cap:
-            logger.debug(
-                "Skipping %s: market_cap %s < min_market_cap %s", ticker, mcap, min_market_cap
-            )
+            logger.debug("Skipping %s: market_cap %s < min_market_cap %s", ticker, mcap, min_market_cap)
             continue
 
         vol = entry.get("volume")
@@ -408,51 +400,77 @@ def format_markdown_report(df: pd.DataFrame) -> str:
 
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
-    missing_cols = {
-        col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns
-    }
+    missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}
     if missing_cols:
         df = df.assign(**missing_cols)
     if "day_change_source" not in df.columns:
         df = df.assign(day_change_source="")
 
-    lines.append(
-        "> Data note: Premarket/after-hours data may be incomplete depending on Yahoo availability."
-    )
+    lines.append("> Data note: Premarket/after-hours data may be incomplete depending on Yahoo availability.")
     lines.append("> Heuristic note: lower-lows penalty uses a simple recent-candles pattern.")
     lines.append("")
 
+    # --- A1/A2 classification for the A-list (markdown output only) ---
+    day_change_numeric = pd.to_numeric(df.get("day_change_pct", 0), errors="coerce")
+    distance_from_high_numeric = pd.to_numeric(df.get("distance_from_high_pct", 0), errors="coerce")
+    score_numeric = pd.to_numeric(df.get("score", 0), errors="coerce").fillna(0)
+
+    vwap_numeric = pd.to_numeric(df.get("vwap", 0), errors="coerce")
+    last_numeric = pd.to_numeric(df.get("last", 0), errors="coerce")
+    above_vwap = last_numeric > vwap_numeric
+
+    sources_series = df.get("sources") if "sources" in df.columns else pd.Series([""] * len(df))
+    sources_str = sources_series.astype(str)
+    has_most_active = sources_str.str.contains("Most Active", case=False, na=False)
+
+    in_do_not_chase = (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD) & (
+        distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD
+    )
+
+    a_score = score_numeric >= 70
+    a1_mask = (
+        a_score
+        & (~in_do_not_chase)
+        & (distance_from_high_numeric > -8)
+        & ((day_change_numeric < 25) | has_most_active)
+        & above_vwap
+    )
+    a2_mask = a_score & (~a1_mask)
+
     labels = {
-        "A-list": "tradable strength",
+        "A1": "tradable strength",
+        "A2": "strong but extended / wait",
         "B-list": "watch/reversal only",
         "C-list": "avoid",
     }
 
-    for bucket in ["A-list", "B-list", "C-list"]:
+    sections: list[tuple[str, pd.Series]] = [
+        ("A1", a1_mask),
+        ("A2", a2_mask),
+        ("B-list", df["classification"] == "B-list"),
+        ("C-list", df["classification"] == "C-list"),
+    ]
+
+    for bucket, mask in sections:
         lines.append(f"## {bucket}: {labels[bucket]}")
-        section = df[df["classification"] == bucket]
+        section = df[mask]
         if section.empty:
             lines.append("- (ingen kandidater)")
             lines.append("")
             continue
 
         for _, row in section.iterrows():
-            sources_str = str(row.get("sources", "")).strip()
-            sources_note = f" [{sources_str}]" if sources_str else ""
+            sources_str_row = str(row.get("sources", "")).strip()
+            sources_note = f" [{sources_str_row}]" if sources_str_row else ""
             lines.append(
-                f"- {row['ticker']}{sources_note}: score {int(row['score'])}. "
+                f"- {row['ticker']}{sources_note}: score {int(row.get('score', 0))}. "
                 f"{row.get('reasons', '')}. "
                 f"Endring {row.get('day_change_pct', 0)}% "
                 f"(kilde: {row.get('day_change_source', '')})."
             )
     lines.append("")
 
-    day_change_numeric = pd.to_numeric(df["day_change_pct"], errors="coerce")
-    distance_from_high_numeric = pd.to_numeric(df["distance_from_high_pct"], errors="coerce")
-    do_not_chase = df[
-        (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD)
-        & (distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD)
-    ]
+    do_not_chase = df[in_do_not_chase]
     lines.append("## Do-not-chase warning")
     if do_not_chase.empty:
         lines.append("- (none)")
