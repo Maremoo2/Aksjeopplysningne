@@ -32,6 +32,16 @@ YAHOO_SCREENER_LABEL: dict[str, str] = {
     "yahoo-unusual-volume": "Unusual Volume",
     "yahoo-high-beta": "High Beta",
 }
+
+# Sources included in --source yahoo-all.
+# yahoo-trending (day_trending_tickers), yahoo-unusual-volume (sec_unusual_volume) and
+# yahoo-high-beta (high_beta_stocks) currently return HTTP 404 from the Yahoo predefined
+# screener API and are therefore excluded until the correct scrIds are confirmed.
+# Once verified, add them back here.
+YAHOO_ENABLED_SOURCES: tuple[str, ...] = (
+    "yahoo-gainers",
+    "yahoo-most-active",
+)
 YAHOO_SCREENER_API = (
     "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
     "?scrIds={scr_id}&count={count}&formatted=false"
@@ -142,7 +152,8 @@ def fetch_yahoo_all(limit: int) -> list[dict[str, Any]]:
     any_success = False
     errors: list[str] = []
 
-    for source_key, label in YAHOO_SCREENER_LABEL.items():
+    for source_key in YAHOO_ENABLED_SOURCES:
+        label = YAHOO_SCREENER_LABEL[source_key]
         try:
             entries = fetch_yahoo_screener(source_key, limit)
             any_success = True
@@ -453,7 +464,11 @@ def format_markdown_report(df: pd.DataFrame) -> str:
             )
     lines.append("")
 
-    errors = df[df.get("error").notna()] if "error" in df.columns else pd.DataFrame()
+    if "error" in df.columns:
+        error_col = df["error"].astype(str).str.strip()
+        errors = df[error_col != ""]
+    else:
+        errors = pd.DataFrame()
     if not errors.empty:
         lines.append("## Feil")
         for _, row in errors.iterrows():
