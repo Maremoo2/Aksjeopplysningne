@@ -11,6 +11,8 @@ import yfinance as yf
 
 DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 20
 DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -8
+SPREAD_PENALTY_THRESHOLD_BPS = 30
+BASIS_POINTS_MULTIPLIER = 10000
 
 
 @dataclass
@@ -58,6 +60,34 @@ def classify(score: int) -> str:
     return "C-list"
 
 
+def as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def first_regular_session_open(intraday: pd.DataFrame) -> float | None:
+    if intraday.empty or "Open" not in intraday.columns:
+        return None
+    try:
+        regular = intraday.between_time("09:30", "16:00")
+    except (TypeError, ValueError):
+        regular = intraday
+    if regular.empty:
+        return None
+    return as_float(regular["Open"].iloc[0])
+
+
 def score_stock(item: WatchlistItem) -> dict[str, Any]:
     stock = yf.Ticker(item.ticker)
     intraday = stock.history(period="1d", interval="1m", prepost=True)
@@ -77,7 +107,26 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     volume_sum = intraday["Volume"].sum()
     vwap = float((typical * intraday["Volume"]).sum() / volume_sum) if volume_sum else last
 
-    day_change_pct = ((last - open_price) / open_price) * 100 if open_price else 0.0
+    info = stock.info or {}
+    fast_info = stock.fast_info or {}
+    previous_close = as_float(
+        first_non_none(
+            fast_info.get("previous_close"),
+            fast_info.get("previousClose"),
+            info.get("previousClose"),
+            info.get("regularMarketPreviousClose"),
+        )
+    )
+    regular_open = first_regular_session_open(intraday)
+    regular_open_valid = regular_open if regular_open is not None and regular_open > 0 else None
+    day_change_reference = (
+        previous_close if previous_close is not None and previous_close > 0 else regular_open_valid
+    )
+    day_change_pct = (
+        ((last - day_change_reference) / day_change_reference) * 100
+        if day_change_reference is not None and day_change_reference > 0
+        else 0.0
+    )
     dist_from_high_pct = ((last - day_high) / day_high) * 100 if day_high else 0.0
     range_pos = (last - day_low) / (day_high - day_low) if day_high != day_low else 0.5
 
@@ -88,10 +137,11 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     lows = intraday["Low"].tail(8)
     lower_lows = len(lows) >= 3 and bool(lows.is_monotonic_decreasing)
 
-    info = stock.info or {}
-    bid = float(info.get("bid") or 0)
-    ask = float(info.get("ask") or 0)
-    spread_pct = ((ask - bid) / last) * 100 if ask > 0 and bid > 0 and last > 0 else 0.0
+    bid = as_float(first_non_none(fast_info.get("bid"), info.get("bid"))) or 0.0
+    ask = as_float(first_non_none(fast_info.get("ask"), info.get("ask"))) or 0.0
+    spread_ratio = ((ask - bid) / last) if ask > 0 and bid > 0 and last > 0 else 0.0
+    spread_bps = spread_ratio * BASIS_POINTS_MULTIPLIER
+    spread_pct = spread_ratio * 100
 
     market_cap_raw = info.get("marketCap")
     market_cap = int(market_cap_raw) if market_cap_raw else None
@@ -135,7 +185,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         score -= 20
         reasons.append("lower lows (heuristic)")
 
-    if spread_pct > 0.5:
+    if spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
         score -= 15
         reasons.append("wide spread")
 
@@ -154,6 +204,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         "avg_volume_20d": int(avg_volume) if avg_volume is not None else None,
         "volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
         "day_change_pct": round(day_change_pct, 2),
+        "previous_close": round(previous_close, 2) if previous_close else None,
         "distance_from_high_pct": round(dist_from_high_pct, 2),
         "range_position": round(range_pos, 2),
         "vwap": round(vwap, 2),
