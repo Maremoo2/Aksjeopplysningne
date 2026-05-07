@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -75,6 +76,20 @@ def as_bool(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    """Convert value to int, returning *default* for '', None, NaN, or non-numeric input."""
+    if value is None:
+        return default
+    if isinstance(value, float) and math.isnan(value):
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def load_watchlist(path: Path) -> list[WatchlistItem]:
@@ -472,11 +487,17 @@ def format_markdown_report(df: pd.DataFrame) -> str:
         "C-list": "avoid",
     }
 
+    # Rows with a non-empty error value belong only in the Feil section.
+    if "error" in df.columns:
+        has_error = df["error"].astype(str).str.strip() != ""
+    else:
+        has_error = pd.Series(False, index=df.index)
+
     sections: list[tuple[str, pd.Series]] = [
-        ("A1", df["setup_bucket"] == "A1"),
-        ("A2", df["setup_bucket"] == "A2"),
-        ("B-list", df["setup_bucket"] == "B-list"),
-        ("C-list", df["setup_bucket"] == "C-list"),
+        ("A1", (df["setup_bucket"] == "A1") & ~has_error),
+        ("A2", (df["setup_bucket"] == "A2") & ~has_error),
+        ("B-list", (df["setup_bucket"] == "B-list") & ~has_error),
+        ("C-list", (df["setup_bucket"] == "C-list") & ~has_error),
     ]
 
     for bucket, mask in sections:
@@ -491,7 +512,7 @@ def format_markdown_report(df: pd.DataFrame) -> str:
             sources_str_row = str(row.get("sources", "")).strip()
             sources_note = f" [{sources_str_row}]" if sources_str_row else ""
             lines.append(
-                f"- {row['ticker']}{sources_note}: score {int(row.get('score', 0))}. "
+                f"- {row['ticker']}{sources_note}: score {safe_int(row.get('score', 0))}. "
                 f"{row.get('reasons', '')}. "
                 f"Endring {row.get('day_change_pct', 0)}% "
                 f"(kilde: {row.get('day_change_source', '')})."
