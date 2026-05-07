@@ -29,7 +29,7 @@ def as_bool(value: Any) -> bool:
 def load_watchlist(path: Path) -> list[WatchlistItem]:
     df = pd.read_csv(path)
     if "ticker" not in df.columns:
-        raise ValueError("watchlist.csv må ha kolonnen 'ticker'")
+        raise ValueError(f"{path} må ha kolonnen 'ticker'")
 
     items: list[WatchlistItem] = []
     for _, row in df.fillna("").iterrows():
@@ -83,7 +83,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     volume_ratio = (day_volume / avg_volume) if avg_volume else 0.0
 
     lows = intraday["Low"].tail(8)
-    lower_lows = bool(len(lows) >= 3 and lows.is_monotonic_decreasing)
+    lower_lows = len(lows) >= 3 and bool(lows.is_monotonic_decreasing)
 
     info = stock.info or {}
     bid = float(info.get("bid") or 0)
