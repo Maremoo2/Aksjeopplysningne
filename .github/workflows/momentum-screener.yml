@@ -26,10 +26,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run momentum screener
+      - name: Run watchlist screener
         run: |
-          mkdir -p reports
-          python screener.py --input watchlist.csv --outdir reports
+          mkdir -p reports/watchlist
+          python screener.py --source watchlist --input watchlist.csv --outdir reports/watchlist
+
+      - name: Run Yahoo-all screener
+        run: |
+          mkdir -p reports/yahoo-all
+          python screener.py --source yahoo-all --limit 25 --outdir reports/yahoo-all
+        continue-on-error: true
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
