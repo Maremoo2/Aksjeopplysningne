@@ -12,6 +12,7 @@ import yfinance as yf
 DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 20
 DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -8
 SPREAD_PENALTY_THRESHOLD_BPS = 30
+BPS_MULTIPLIER = 10000
 
 
 @dataclass
@@ -171,7 +172,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         score -= 20
         reasons.append("lower lows (heuristic)")
 
-    if (spread_decimal * 10000) > SPREAD_PENALTY_THRESHOLD_BPS:
+    if (spread_decimal * BPS_MULTIPLIER) > SPREAD_PENALTY_THRESHOLD_BPS:
         score -= 15
         reasons.append("wide spread")
 
