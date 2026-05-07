@@ -1,0 +1,39 @@
+name: Momentum Screener
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron uses UTC.
+    # 14:45 Europe/Oslo summer time = 12:45 UTC.
+    # 14:45 Europe/Oslo winter time = 13:45 UTC.
+    - cron: "45 12 * * 1-5"
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run momentum screener
+        run: |
+          mkdir -p reports
+          python screener.py --input watchlist.csv --outdir reports
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: momentum-reports
+          path: reports/
+          if-no-files-found: error
