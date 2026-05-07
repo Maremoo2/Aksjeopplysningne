@@ -189,7 +189,8 @@ def fetch_yahoo_group(source_keys: tuple[str, ...], limit: int) -> list[dict[str
             entries = fetch_yahoo_screener(source_key, limit)
             any_success = True
         except RuntimeError as exc:
-            logger.warning("%s — skipping", exc)
+            logger.warning("%s unavailable, skipping", source_key)
+            logger.debug("  Detail: %s", exc)
             errors.append(str(exc))
             continue
 
@@ -446,12 +447,23 @@ def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
 
     B-list and C-list rows are labelled from their existing ``classification`` column.
     """
-    day_change_numeric = pd.to_numeric(df.get("day_change_pct", 0), errors="coerce").fillna(0.0)
-    distance_from_high_numeric = pd.to_numeric(df.get("distance_from_high_pct", 0), errors="coerce").fillna(0.0)
-    score_numeric = pd.to_numeric(df.get("score", 0), errors="coerce").fillna(0)
+    _zeros = pd.Series(0, index=df.index, dtype=float)
+    day_change_numeric = pd.to_numeric(
+        df["day_change_pct"] if "day_change_pct" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
+    distance_from_high_numeric = pd.to_numeric(
+        df["distance_from_high_pct"] if "distance_from_high_pct" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
+    score_numeric = pd.to_numeric(
+        df["score"] if "score" in df.columns else _zeros, errors="coerce"
+    ).fillna(0)
 
-    vwap_numeric = pd.to_numeric(df.get("vwap", 0), errors="coerce").fillna(0.0)
-    last_numeric = pd.to_numeric(df.get("last", 0), errors="coerce").fillna(0.0)
+    vwap_numeric = pd.to_numeric(
+        df["vwap"] if "vwap" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
+    last_numeric = pd.to_numeric(
+        df["last"] if "last" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
     above_vwap = last_numeric > vwap_numeric
 
     sources_series = df.get("sources") if "sources" in df.columns else pd.Series([""] * len(df), index=df.index)
