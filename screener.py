@@ -173,9 +173,11 @@ def format_markdown_report(df: pd.DataFrame) -> str:
 
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0)
-    for col in ("day_change_pct", "distance_from_high_pct"):
-        if col not in df.columns:
-            df = df.assign(**{col: 0})
+    missing_cols = {
+        col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns
+    }
+    if missing_cols:
+        df = df.assign(**missing_cols)
 
     lines.append(
         "> Data note: Premarket/after-hours data may be incomplete depending on Yahoo availability."
@@ -205,11 +207,11 @@ def format_markdown_report(df: pd.DataFrame) -> str:
             )
     lines.append("")
 
-    day_change = pd.to_numeric(df["day_change_pct"], errors="coerce")
-    distance_from_high = pd.to_numeric(df["distance_from_high_pct"], errors="coerce")
+    day_change_numeric = pd.to_numeric(df["day_change_pct"], errors="coerce")
+    distance_from_high_numeric = pd.to_numeric(df["distance_from_high_pct"], errors="coerce")
     do_not_chase = df[
-        (day_change > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD)
-        & (distance_from_high <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD)
+        (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD)
+        & (distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD)
     ]
     lines.append("## Do-not-chase warning")
     if do_not_chase.empty:
