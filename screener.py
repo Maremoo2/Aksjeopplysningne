@@ -127,7 +127,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         day_change_source = "regular_open_fallback"
     else:
         day_change_reference = None
-        day_change_source = "no_reference_fallback_zero"
+        day_change_source = "no_reference"
     day_change_pct = (
         ((last - day_change_reference) / day_change_reference) * 100
         if day_change_reference is not None and day_change_reference > 0
@@ -145,7 +145,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
 
     bid = as_float(first_non_none(fast_info.get("bid"), info.get("bid")))
     ask = as_float(first_non_none(fast_info.get("ask"), info.get("ask")))
-    spread_inputs_valid = bool(last > 0 and bid is not None and ask is not None and bid > 0 and ask > 0)
+    spread_inputs_valid = last > 0 and bid is not None and ask is not None and bid > 0 and ask > 0
     spread_ratio = ((ask - bid) / last) if spread_inputs_valid else None
     spread_bps = (spread_ratio * BASIS_POINTS_MULTIPLIER) if spread_ratio is not None else None
     spread_pct = (spread_ratio * 100) if spread_ratio is not None else None
