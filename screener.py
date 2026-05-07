@@ -119,9 +119,15 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     )
     regular_open = first_regular_session_open(intraday)
     regular_open_valid = regular_open if regular_open is not None and regular_open > 0 else None
-    day_change_reference = (
-        previous_close if previous_close is not None and previous_close > 0 else regular_open_valid
-    )
+    if previous_close is not None and previous_close > 0:
+        day_change_reference = previous_close
+        day_change_source = "previous_close"
+    elif regular_open_valid is not None:
+        day_change_reference = regular_open_valid
+        day_change_source = "regular_open_fallback"
+    else:
+        day_change_reference = None
+        day_change_source = "no_reference_fallback_zero"
     day_change_pct = (
         ((last - day_change_reference) / day_change_reference) * 100
         if day_change_reference is not None and day_change_reference > 0
@@ -137,11 +143,12 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     lows = intraday["Low"].tail(8)
     lower_lows = len(lows) >= 3 and bool(lows.is_monotonic_decreasing)
 
-    bid = as_float(first_non_none(fast_info.get("bid"), info.get("bid"))) or 0.0
-    ask = as_float(first_non_none(fast_info.get("ask"), info.get("ask"))) or 0.0
-    spread_ratio = ((ask - bid) / last) if ask > 0 and bid > 0 and last > 0 else 0.0
-    spread_bps = spread_ratio * BASIS_POINTS_MULTIPLIER
-    spread_pct = spread_ratio * 100
+    bid = as_float(first_non_none(fast_info.get("bid"), info.get("bid")))
+    ask = as_float(first_non_none(fast_info.get("ask"), info.get("ask")))
+    spread_inputs_valid = bool(last > 0 and bid is not None and ask is not None and bid > 0 and ask > 0)
+    spread_ratio = ((ask - bid) / last) if spread_inputs_valid else None
+    spread_bps = (spread_ratio * BASIS_POINTS_MULTIPLIER) if spread_ratio is not None else None
+    spread_pct = (spread_ratio * 100) if spread_ratio is not None else None
 
     market_cap_raw = info.get("marketCap")
     market_cap = int(market_cap_raw) if market_cap_raw else None
@@ -185,8 +192,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         score -= 20
         reasons.append("lower lows (heuristic)")
 
-    if spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
-        score -= 15
+    if spread_bps is not None and spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
         reasons.append("wide spread")
 
     if market_cap is not None and market_cap < 500_000_000:
@@ -204,13 +210,15 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         "avg_volume_20d": int(avg_volume) if avg_volume is not None else None,
         "volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
         "day_change_pct": round(day_change_pct, 2),
+        "day_change_source": day_change_source,
         "previous_close": round(previous_close, 2) if previous_close else None,
         "distance_from_high_pct": round(dist_from_high_pct, 2),
         "range_position": round(range_pos, 2),
         "vwap": round(vwap, 2),
         "premarket": round(float(premarket), 2) if premarket else None,
         "after_hours": round(float(after_hours), 2) if after_hours else None,
-        "spread_pct": round(spread_pct, 2),
+        "spread_pct": round(spread_pct, 2) if spread_pct is not None else None,
+        "spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
         "market_cap": market_cap,
         "score": score,
         "classification": classify(score),
@@ -223,12 +231,14 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     lines = [f"# Daily Momentum Report ({now})", ""]
 
     if "classification" not in df.columns:
-        df = df.assign(classification="", score=0, reasons="", day_change_pct=0)
+        df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
     missing_cols = {
         col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns
     }
     if missing_cols:
         df = df.assign(**missing_cols)
+    if "day_change_source" not in df.columns:
+        df = df.assign(day_change_source="")
 
     lines.append(
         "> Data note: Premarket/after-hours data may be incomplete depending on Yahoo availability."
@@ -254,7 +264,8 @@ def format_markdown_report(df: pd.DataFrame) -> str:
             lines.append(
                 f"- {row['ticker']}: score {int(row['score'])}. "
                 f"{row.get('reasons', '')}. "
-                f"Endring {row.get('day_change_pct', 0)}%."
+                f"Endring {row.get('day_change_pct', 0)}% "
+                f"(kilde: {row.get('day_change_source', '')})."
             )
     lines.append("")
 
