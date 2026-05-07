@@ -452,6 +452,20 @@ def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
     return result
 
 
+_CHATGPT_PROMPT = (
+    "Review this momentum report. Which 3 names have the best setup, "
+    "which are chase-risk, and which should be ignored? "
+    "Focus on A1/A2/B-list, sources, VWAP, distance from high, and do-not-chase warnings."
+)
+
+
+def _str_col(frame: pd.DataFrame, col: str) -> pd.Series:
+    """Return ``col`` as a string Series, defaulting to '' when absent."""
+    if col in frame.columns:
+        return frame[col].astype(str)
+    return pd.Series([""] * len(frame), index=frame.index)
+
+
 def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> list[str]:
     """Build the ## Decision summary section lines."""
     lines: list[str] = ["## Decision summary", ""]
@@ -475,8 +489,8 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
 
     def _rank_candidates(frame: pd.DataFrame) -> pd.DataFrame:
         frame = frame.copy()
-        src = frame.get("sources", pd.Series([""] * len(frame), index=frame.index)).astype(str)
-        frame["_multi"] = src.apply(lambda s: 1 if "," in s and s.strip() else 0)
+        src = _str_col(frame, "sources")
+        frame["_multi"] = src.apply(lambda s: 1 if "," in s.strip() else 0)
         dist_h = pd.to_numeric(frame.get("distance_from_high_pct", 0), errors="coerce").fillna(-100)
         frame["_near_high"] = (dist_h > -8).astype(int)
         vwap_n = pd.to_numeric(frame.get("vwap", 0), errors="coerce").fillna(0)
@@ -534,7 +548,7 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     lines.append("")
 
     valid = df[~has_error].copy()
-    src_series = valid.get("sources", pd.Series([""] * len(valid), index=valid.index)).astype(str)
+    src_series = _str_col(valid, "sources")
     multi_df = valid[src_series.str.contains(",", na=False)]
 
     if multi_df.empty:
@@ -568,9 +582,7 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     c_list = df[c_mask].copy()
 
     if not c_list.empty:
-        reasons_col = c_list.get(
-            "reasons", pd.Series([""] * len(c_list), index=c_list.index)
-        ).astype(str)
+        reasons_col = _str_col(c_list, "reasons")
         chg_num = pd.to_numeric(c_list.get("day_change_pct", 0), errors="coerce").fillna(0)
         dist_num = pd.to_numeric(c_list.get("distance_from_high_pct", 0), errors="coerce").fillna(0)
         sc_num = pd.to_numeric(c_list.get("score", 0), errors="coerce").fillna(0)
@@ -600,11 +612,7 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     lines.append("### 5. Paste-to-ChatGPT review prompt")
     lines.append("")
     lines.append("```")
-    lines.append(
-        "Review this momentum report. Which 3 names have the best setup, "
-        "which are chase-risk, and which should be ignored? "
-        "Focus on A1/A2/B-list, sources, VWAP, distance from high, and do-not-chase warnings."
-    )
+    lines.append(_CHATGPT_PROMPT)
     lines.append("```")
     lines.append("")
 
