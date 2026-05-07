@@ -127,8 +127,8 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
 
     bid = as_float(fast_info.get("bid") or info.get("bid")) or 0.0
     ask = as_float(fast_info.get("ask") or info.get("ask")) or 0.0
-    spread_decimal = ((ask - bid) / last) if ask > 0 and bid > 0 and last > 0 else 0.0
-    spread_pct = spread_decimal * 100
+    spread_ratio = ((ask - bid) / last) if ask > 0 and bid > 0 and last > 0 else 0.0
+    spread_pct = spread_ratio * 100
 
     market_cap_raw = info.get("marketCap")
     market_cap = int(market_cap_raw) if market_cap_raw else None
@@ -172,7 +172,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         score -= 20
         reasons.append("lower lows (heuristic)")
 
-    if (spread_decimal * BPS_MULTIPLIER) > SPREAD_PENALTY_THRESHOLD_BPS:
+    if (spread_ratio * BPS_MULTIPLIER) > SPREAD_PENALTY_THRESHOLD_BPS:
         score -= 15
         reasons.append("wide spread")
 
