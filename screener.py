@@ -69,7 +69,16 @@ def as_float(value: Any) -> float | None:
         return None
 
 
+def first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def first_regular_session_open(intraday: pd.DataFrame) -> float | None:
+    if intraday.empty or "Open" not in intraday.columns:
+        return None
     try:
         regular = intraday.between_time("09:30", "16:00")
     except (TypeError, ValueError):
@@ -101,18 +110,21 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     info = stock.info or {}
     fast_info = stock.fast_info or {}
     previous_close = as_float(
-        fast_info.get("previous_close")
-        or fast_info.get("previousClose")
-        or info.get("previousClose")
-        or info.get("regularMarketPreviousClose")
+        first_non_none(
+            fast_info.get("previous_close"),
+            fast_info.get("previousClose"),
+            info.get("previousClose"),
+            info.get("regularMarketPreviousClose"),
+        )
     )
     regular_open = first_regular_session_open(intraday)
+    regular_open_valid = regular_open if regular_open is not None and regular_open > 0 else None
     day_change_reference = (
-        previous_close if previous_close is not None and previous_close > 0 else regular_open
+        previous_close if previous_close is not None and previous_close > 0 else regular_open_valid
     )
     day_change_pct = (
         ((last - day_change_reference) / day_change_reference) * 100
-        if day_change_reference
+        if day_change_reference is not None and day_change_reference > 0
         else 0.0
     )
     dist_from_high_pct = ((last - day_high) / day_high) * 100 if day_high else 0.0
@@ -125,8 +137,8 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     lows = intraday["Low"].tail(8)
     lower_lows = len(lows) >= 3 and bool(lows.is_monotonic_decreasing)
 
-    bid = as_float(fast_info.get("bid") or info.get("bid")) or 0.0
-    ask = as_float(fast_info.get("ask") or info.get("ask")) or 0.0
+    bid = as_float(first_non_none(fast_info.get("bid"), info.get("bid"))) or 0.0
+    ask = as_float(first_non_none(fast_info.get("ask"), info.get("ask"))) or 0.0
     spread_ratio = ((ask - bid) / last) if ask > 0 and bid > 0 and last > 0 else 0.0
     spread_pct = spread_ratio * 100
 
