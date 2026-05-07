@@ -25,6 +25,11 @@ YAHOO_SCREENER_IDS: dict[str, str] = {
     "yahoo-trending": "day_trending_tickers",
     "yahoo-unusual-volume": "sec_unusual_volume",
     "yahoo-high-beta": "high_beta_stocks",
+    "yahoo-losers": "day_losers",
+    "yahoo-oversold": "oversold_stocks",
+    "yahoo-overbought": "overbought_stocks",
+    "yahoo-52-week-gainers": "52wk_gainers",
+    "yahoo-all-time-high": "alltime_new_highs",
 }
 YAHOO_SCREENER_LABEL: dict[str, str] = {
     "yahoo-gainers": "Top Gainers",
@@ -32,16 +37,30 @@ YAHOO_SCREENER_LABEL: dict[str, str] = {
     "yahoo-trending": "Trending Now",
     "yahoo-unusual-volume": "Unusual Volume",
     "yahoo-high-beta": "High Beta",
+    "yahoo-losers": "Top Losers",
+    "yahoo-oversold": "Oversold",
+    "yahoo-overbought": "Overbought",
+    "yahoo-52-week-gainers": "52-Week Gainers",
+    "yahoo-all-time-high": "All-Time High",
 }
 
-# Sources included in --source yahoo-all.
-# yahoo-trending (day_trending_tickers), yahoo-unusual-volume (sec_unusual_volume) and
-# yahoo-high-beta (high_beta_stocks) currently return HTTP 404 from the Yahoo predefined
-# screener API and are therefore excluded until the correct scrIds are confirmed.
-# Once verified, add them back here.
-YAHOO_ENABLED_SOURCES: tuple[str, ...] = (
+# Sources included in --source yahoo-momentum (and yahoo-all for backwards compat).
+# Any source that returns HTTP 404 is logged as a warning and skipped gracefully.
+YAHOO_MOMENTUM_SOURCES: tuple[str, ...] = (
     "yahoo-gainers",
     "yahoo-most-active",
+    "yahoo-trending",
+    "yahoo-unusual-volume",
+    "yahoo-high-beta",
+)
+
+# Sources included in --source yahoo-expanded (superset of yahoo-momentum).
+YAHOO_EXPANDED_SOURCES: tuple[str, ...] = YAHOO_MOMENTUM_SOURCES + (
+    "yahoo-losers",
+    "yahoo-oversold",
+    "yahoo-overbought",
+    "yahoo-52-week-gainers",
+    "yahoo-all-time-high",
 )
 YAHOO_SCREENER_API = (
     "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
@@ -153,23 +172,25 @@ def fetch_yahoo_screener(source_key: str, limit: int) -> list[dict[str, Any]]:
     return results
 
 
-def fetch_yahoo_all(limit: int) -> list[dict[str, Any]]:
-    """Fetch from all Yahoo screeners, combine and deduplicate.
+def fetch_yahoo_group(source_keys: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+    """Fetch from a group of Yahoo screeners, combine and deduplicate.
 
     Each entry gets a 'sources' list showing which screeners it appeared in.
-    Returns an empty list if *all* sources fail (errors are logged).
+    Sources that return HTTP 404 or any other error are logged as warnings and
+    skipped gracefully.  Returns an empty list if *all* sources fail.
     """
     seen: dict[str, dict[str, Any]] = {}
     any_success = False
     errors: list[str] = []
 
-    for source_key in YAHOO_ENABLED_SOURCES:
+    for source_key in source_keys:
         label = YAHOO_SCREENER_LABEL[source_key]
         try:
             entries = fetch_yahoo_screener(source_key, limit)
             any_success = True
         except RuntimeError as exc:
-            logger.warning("%s", exc)
+            logger.warning("%s unavailable, skipping", source_key)
+            logger.debug("  Detail: %s", exc)
             errors.append(str(exc))
             continue
 
@@ -194,6 +215,14 @@ def fetch_yahoo_all(limit: int) -> list[dict[str, Any]]:
             logger.error("  %s", err)
 
     return list(seen.values())
+
+
+def fetch_yahoo_all(limit: int) -> list[dict[str, Any]]:
+    """Fetch from the momentum source group (yahoo-momentum).
+
+    Kept for backwards compatibility — prefer ``--source yahoo-momentum``.
+    """
+    return fetch_yahoo_group(YAHOO_MOMENTUM_SOURCES, limit)
 
 
 def apply_filters(
@@ -418,12 +447,23 @@ def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
 
     B-list and C-list rows are labelled from their existing ``classification`` column.
     """
-    day_change_numeric = pd.to_numeric(df.get("day_change_pct", 0), errors="coerce").fillna(0.0)
-    distance_from_high_numeric = pd.to_numeric(df.get("distance_from_high_pct", 0), errors="coerce").fillna(0.0)
-    score_numeric = pd.to_numeric(df.get("score", 0), errors="coerce").fillna(0)
+    _zeros = pd.Series(0, index=df.index, dtype=float)
+    day_change_numeric = pd.to_numeric(
+        df["day_change_pct"] if "day_change_pct" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
+    distance_from_high_numeric = pd.to_numeric(
+        df["distance_from_high_pct"] if "distance_from_high_pct" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
+    score_numeric = pd.to_numeric(
+        df["score"] if "score" in df.columns else _zeros, errors="coerce"
+    ).fillna(0)
 
-    vwap_numeric = pd.to_numeric(df.get("vwap", 0), errors="coerce").fillna(0.0)
-    last_numeric = pd.to_numeric(df.get("last", 0), errors="coerce").fillna(0.0)
+    vwap_numeric = pd.to_numeric(
+        df["vwap"] if "vwap" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
+    last_numeric = pd.to_numeric(
+        df["last"] if "last" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
     above_vwap = last_numeric > vwap_numeric
 
     sources_series = df.get("sources") if "sources" in df.columns else pd.Series([""] * len(df), index=df.index)
@@ -722,7 +762,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--outdir", default=".", help="Mappe for output-filer")
 
-    all_sources = ["watchlist"] + list(YAHOO_SCREENER_IDS.keys()) + ["yahoo-all"]
+    all_sources = (
+        ["watchlist"]
+        + list(YAHOO_SCREENER_IDS.keys())
+        + ["yahoo-momentum", "yahoo-expanded", "yahoo-all"]
+    )
     parser.add_argument(
         "--source",
         default="watchlist",
@@ -730,7 +774,11 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Datakilde for tickers. "
             "'watchlist' bruker --input CSV (standard). "
-            "Yahoo-alternativer henter fra Yahoo Finance screeners."
+            "Grouped Yahoo sources: 'yahoo-momentum' (recommended), "
+            "'yahoo-expanded' (broadest), 'yahoo-all' (alias for yahoo-momentum). "
+            "Individual Yahoo sources: yahoo-gainers, yahoo-most-active, yahoo-trending, "
+            "yahoo-unusual-volume, yahoo-high-beta, yahoo-losers, yahoo-oversold, "
+            "yahoo-overbought, yahoo-52-week-gainers, yahoo-all-time-high."
         ),
     )
     parser.add_argument(
@@ -772,8 +820,13 @@ def main() -> None:
         watchlist = load_watchlist(Path(args.input))
     else:
         # Fetch from Yahoo screener(s)
-        if source == "yahoo-all":
-            entries = fetch_yahoo_all(args.limit)
+        _GROUP_SOURCES: dict[str, tuple[str, ...]] = {
+            "yahoo-all": YAHOO_MOMENTUM_SOURCES,
+            "yahoo-momentum": YAHOO_MOMENTUM_SOURCES,
+            "yahoo-expanded": YAHOO_EXPANDED_SOURCES,
+        }
+        if source in _GROUP_SOURCES:
+            entries = fetch_yahoo_group(_GROUP_SOURCES[source], args.limit)
             if not entries:
                 print(
                     "ERROR: Could not fetch any tickers from Yahoo screeners. "
