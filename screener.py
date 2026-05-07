@@ -452,6 +452,173 @@ def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
     return result
 
 
+_CHATGPT_PROMPT = (
+    "Review this momentum report. Which 3 names have the best setup, "
+    "which are chase-risk, and which should be ignored? "
+    "Focus on A1/A2/B-list, sources, VWAP, distance from high, and do-not-chase warnings."
+)
+
+
+def _str_col(frame: pd.DataFrame, col: str) -> pd.Series:
+    """Return ``col`` as a string Series, defaulting to '' when absent."""
+    if col in frame.columns:
+        return frame[col].astype(str)
+    return pd.Series([""] * len(frame), index=frame.index)
+
+
+def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> list[str]:
+    """Build the ## Decision summary section lines."""
+    lines: list[str] = ["## Decision summary", ""]
+
+    if "setup_bucket" not in df.columns:
+        df = df.copy()
+        df["setup_bucket"] = compute_setup_bucket(df)
+
+    if "error" in df.columns:
+        has_error = df["error"].astype(str).str.strip() != ""
+    else:
+        has_error = pd.Series(False, index=df.index)
+
+    # ── 1. Top 5 actionable candidates ──────────────────────────────────────
+    lines.append("### 1. Top 5 actionable candidates")
+    lines.append("")
+
+    a1_mask = (df["setup_bucket"] == "A1") & ~has_error & ~in_do_not_chase
+    b_mask = (df["setup_bucket"] == "B-list") & ~has_error & ~in_do_not_chase
+    primary = df[a1_mask | b_mask].copy()
+
+    def _rank_candidates(frame: pd.DataFrame) -> pd.DataFrame:
+        frame = frame.copy()
+        src = _str_col(frame, "sources")
+        frame["_multi"] = src.apply(lambda s: 1 if "," in s.strip() else 0)
+        dist_h = pd.to_numeric(frame.get("distance_from_high_pct", 0), errors="coerce").fillna(-100)
+        frame["_near_high"] = (dist_h > -8).astype(int)
+        vwap_n = pd.to_numeric(frame.get("vwap", 0), errors="coerce").fillna(0)
+        last_n = pd.to_numeric(frame.get("last", 0), errors="coerce").fillna(0)
+        frame["_above_vwap"] = (last_n > vwap_n).astype(int)
+        vol_r = pd.to_numeric(frame.get("volume_ratio", 0), errors="coerce").fillna(0)
+        frame["_vol2x"] = (vol_r > 2).astype(int)
+        frame["_score"] = pd.to_numeric(frame.get("score", 0), errors="coerce").fillna(0)
+        return frame.sort_values(
+            by=["_multi", "_near_high", "_above_vwap", "_vol2x", "_score"],
+            ascending=[False, False, False, False, False],
+        )
+
+    if not primary.empty:
+        primary = _rank_candidates(primary)
+
+    top5 = primary.head(5)
+
+    # Fall back to A2 / do-not-chase if fewer than 5
+    if len(top5) < 5:
+        a2_mask = (df["setup_bucket"] == "A2") & ~has_error
+        a2_extra = df[a2_mask & ~df.index.isin(top5.index)]
+        top5 = pd.concat([top5, a2_extra.head(5 - len(top5))])
+    if len(top5) < 5:
+        dnc_extra = df[in_do_not_chase & ~has_error & ~df.index.isin(top5.index)]
+        top5 = pd.concat([top5, dnc_extra.head(5 - len(top5))])
+
+    def _short_reason(reasons: str) -> str:
+        tags = []
+        for tag in ("above VWAP", "near high", "volume > 2x", "news/earnings catalyst", "sector strong"):
+            if tag in reasons:
+                tags.append(tag)
+        if not tags and reasons:
+            tags.append(reasons.split(",")[0].strip())
+        return ", ".join(tags)
+
+    if top5.empty:
+        lines.append("- (no candidates)")
+    else:
+        for _, row in top5.iterrows():
+            ticker = str(row.get("ticker", ""))
+            src_val = str(row.get("sources", "")).strip()
+            src_note = f" [{src_val}]" if src_val else ""
+            bucket = str(row.get("setup_bucket", ""))
+            sc = safe_int(row.get("score", 0))
+            chg = pd.to_numeric(row.get("day_change_pct", 0), errors="coerce") or 0.0
+            reason_text = _short_reason(str(row.get("reasons", "")))
+            lines.append(
+                f"- **{ticker}**{src_note} | {bucket} | score {sc} | {chg:+.2f}% | {reason_text}"
+            )
+    lines.append("")
+
+    # ── 2. Best multi-source candidate ──────────────────────────────────────
+    lines.append("### 2. Best multi-source candidate")
+    lines.append("")
+
+    valid = df[~has_error].copy()
+    src_series = _str_col(valid, "sources")
+    multi_df = valid[src_series.str.contains(",", na=False)]
+
+    if multi_df.empty:
+        lines.append("No multi-source candidate found.")
+    else:
+        sc_num = pd.to_numeric(multi_df.get("score", 0), errors="coerce").fillna(0)
+        best = multi_df.loc[sc_num.idxmax()]
+        lines.append(f"- **{best.get('ticker', '')}** [{str(best.get('sources', '')).strip()}]")
+    lines.append("")
+
+    # ── 3. Do-not-chase names ────────────────────────────────────────────────
+    lines.append("### 3. Do-not-chase names")
+    lines.append("")
+
+    dnc_df = df[in_do_not_chase]
+    if dnc_df.empty:
+        lines.append("- (none)")
+    else:
+        for _, row in dnc_df.iterrows():
+            ticker = str(row.get("ticker", ""))
+            chg = pd.to_numeric(row.get("day_change_pct", 0), errors="coerce") or 0.0
+            dist_h = pd.to_numeric(row.get("distance_from_high_pct", 0), errors="coerce") or 0.0
+            lines.append(f"- **{ticker}**: {chg:+.2f}% day change, {dist_h:.2f}% from high")
+    lines.append("")
+
+    # ── 4. Avoid / weak names ────────────────────────────────────────────────
+    lines.append("### 4. Avoid / weak names")
+    lines.append("")
+
+    c_mask = (df["setup_bucket"] == "C-list") & ~has_error
+    c_list = df[c_mask].copy()
+
+    if not c_list.empty:
+        reasons_col = _str_col(c_list, "reasons")
+        chg_num = pd.to_numeric(c_list.get("day_change_pct", 0), errors="coerce").fillna(0)
+        dist_num = pd.to_numeric(c_list.get("distance_from_high_pct", 0), errors="coerce").fillna(0)
+        sc_num = pd.to_numeric(c_list.get("score", 0), errors="coerce").fillna(0)
+        c_list = c_list.copy()
+        c_list["_red"] = (chg_num < 0).astype(int)
+        c_list["_far"] = (dist_num < -10).astype(int)
+        c_list["_ll"] = reasons_col.str.contains("lower lows", case=False, na=False).astype(int)
+        c_list["_wscore"] = -sc_num
+        c_list = c_list.sort_values(
+            by=["_red", "_far", "_ll", "_wscore"], ascending=[False, False, False, False]
+        )
+        for _, row in c_list.head(5).iterrows():
+            ticker = str(row.get("ticker", ""))
+            reasons = str(row.get("reasons", ""))
+            tags = []
+            for tag in ("red", "far from high", "lower lows", "wide spread"):
+                if tag in reasons:
+                    tags.append(tag)
+            if not tags and reasons:
+                tags.append(reasons.split(",")[0].strip())
+            lines.append(f"- **{ticker}**: {', '.join(tags)}")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+
+    # ── 5. Paste-to-ChatGPT review prompt ────────────────────────────────────
+    lines.append("### 5. Paste-to-ChatGPT review prompt")
+    lines.append("")
+    lines.append("```")
+    lines.append(_CHATGPT_PROMPT)
+    lines.append("```")
+    lines.append("")
+
+    return lines
+
+
 def format_markdown_report(df: pd.DataFrame) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [f"# Daily Momentum Report ({now})", ""]
@@ -479,6 +646,8 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     in_do_not_chase = (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD) & (
         distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD
     )
+
+    lines.extend(format_decision_summary(df, in_do_not_chase))
 
     labels = {
         "A1": "tradable strength",
