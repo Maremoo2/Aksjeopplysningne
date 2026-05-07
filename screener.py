@@ -9,6 +9,9 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
+DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 20
+DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -8
+
 
 @dataclass
 class WatchlistItem:
@@ -167,12 +170,12 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
 def format_markdown_report(df: pd.DataFrame) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [f"# Daily Momentum Report ({now})", ""]
+
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0)
-    if "day_change_pct" not in df.columns:
-        df = df.assign(day_change_pct=0)
-    if "distance_from_high_pct" not in df.columns:
-        df = df.assign(distance_from_high_pct=0)
+    for col in ("day_change_pct", "distance_from_high_pct"):
+        if col not in df.columns:
+            df = df.assign(**{col: 0})
 
     lines.append(
         "> Data note: Premarket/after-hours data may be incomplete depending on Yahoo availability."
@@ -200,11 +203,14 @@ def format_markdown_report(df: pd.DataFrame) -> str:
                 f"{row.get('reasons', '')}. "
                 f"Endring {row.get('day_change_pct', 0)}%."
             )
-        lines.append("")
+    lines.append("")
 
     day_change = pd.to_numeric(df["day_change_pct"], errors="coerce")
     distance_from_high = pd.to_numeric(df["distance_from_high_pct"], errors="coerce")
-    do_not_chase = df[(day_change > 20) & (distance_from_high <= -8)]
+    do_not_chase = df[
+        (day_change > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD)
+        & (distance_from_high <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD)
+    ]
     lines.append("## Do-not-chase warning")
     if do_not_chase.empty:
         lines.append("- (none)")
