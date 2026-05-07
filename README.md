@@ -8,12 +8,14 @@ Lite personlig prosjekt for momentum-screening av aksjer.
 - Henter intradag-data via `yfinance` (pris, volum, høy/lav, pre/after-hours når tilgjengelig)
 - Regner ut momentum-score (0-100-ish) basert på enkle regler
 - Deler tickere i:
-  - `A-list` (score > 70)
+  - `A-list` (score >= 70)
   - `B-list` (score 45-70)
   - `C-list` (score < 45)
 - Lager både CSV-rapport og kort Markdown-rapport
+- Legger til egen `Do-not-chase warning` for tickere som er kraftig opp, men langt under intradag-high
 
 > Merk: `yfinance` er uoffisielt og kan bli rate-limitet eller endre seg hvis Yahoo endrer API/dataformat.
+> Premarket/after-hours-data kan være ufullstendig avhengig av Yahoo-tilgjengelighet.
 
 ## Kom i gang
 

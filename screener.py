@@ -48,7 +48,7 @@ def load_watchlist(path: Path) -> list[WatchlistItem]:
 
 
 def classify(score: int) -> str:
-    if score > 70:
+    if score >= 70:
         return "A-list"
     if score >= 45:
         return "B-list"
@@ -79,8 +79,8 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     range_pos = (last - day_low) / (day_high - day_low) if day_high != day_low else 0.5
 
     monthly = stock.history(period="1mo", interval="1d")
-    avg_volume = float(monthly["Volume"].tail(20).mean()) if not monthly.empty else 0.0
-    volume_ratio = (day_volume / avg_volume) if avg_volume else 0.0
+    avg_volume = float(monthly["Volume"].tail(20).mean()) if not monthly.empty else None
+    volume_ratio = (day_volume / avg_volume) if avg_volume and avg_volume > 0 else None
 
     lows = intraday["Low"].tail(8)
     lower_lows = len(lows) >= 3 and bool(lows.is_monotonic_decreasing)
@@ -90,7 +90,8 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     ask = float(info.get("ask") or 0)
     spread_pct = ((ask - bid) / last) * 100 if ask > 0 and bid > 0 and last > 0 else 0.0
 
-    market_cap = int(info.get("marketCap") or 0)
+    market_cap_raw = info.get("marketCap")
+    market_cap = int(market_cap_raw) if market_cap_raw else None
     premarket = info.get("preMarketPrice")
     after_hours = info.get("postMarketPrice")
 
@@ -103,7 +104,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     else:
         reasons.append("red")
 
-    if volume_ratio > 2:
+    if volume_ratio is not None and volume_ratio > 2:
         score += 20
         reasons.append("volume > 2x")
 
@@ -129,13 +130,13 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
 
     if lower_lows:
         score -= 20
-        reasons.append("lower lows")
+        reasons.append("lower lows (heuristic)")
 
     if spread_pct > 0.5:
         score -= 15
         reasons.append("wide spread")
 
-    if market_cap and market_cap < 500_000_000:
+    if market_cap is not None and market_cap < 500_000_000:
         score -= 15
         reasons.append("very low market cap")
 
@@ -147,8 +148,8 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         "high": round(day_high, 2),
         "low": round(day_low, 2),
         "volume": day_volume,
-        "avg_volume_20d": int(avg_volume),
-        "volume_ratio": round(volume_ratio, 2),
+        "avg_volume_20d": int(avg_volume) if avg_volume is not None else None,
+        "volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
         "day_change_pct": round(day_change_pct, 2),
         "distance_from_high_pct": round(dist_from_high_pct, 2),
         "range_position": round(range_pos, 2),
@@ -168,6 +169,16 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     lines = [f"# Daily Momentum Report ({now})", ""]
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0)
+    if "day_change_pct" not in df.columns:
+        df = df.assign(day_change_pct=0)
+    if "distance_from_high_pct" not in df.columns:
+        df = df.assign(distance_from_high_pct=0)
+
+    lines.append(
+        "> Data note: Premarket/after-hours data may be incomplete depending on Yahoo availability."
+    )
+    lines.append("> Heuristic note: lower-lows penalty uses a simple recent-candles pattern.")
+    lines.append("")
 
     labels = {
         "A-list": "tradable strength",
@@ -190,6 +201,20 @@ def format_markdown_report(df: pd.DataFrame) -> str:
                 f"Endring {row.get('day_change_pct', 0)}%."
             )
         lines.append("")
+
+    day_change = pd.to_numeric(df["day_change_pct"], errors="coerce")
+    distance_from_high = pd.to_numeric(df["distance_from_high_pct"], errors="coerce")
+    do_not_chase = df[(day_change > 20) & (distance_from_high <= -8)]
+    lines.append("## Do-not-chase warning")
+    if do_not_chase.empty:
+        lines.append("- (none)")
+    else:
+        for _, row in do_not_chase.iterrows():
+            lines.append(
+                f"- {row['ticker']} ({row.get('day_change_pct', 0)}%, "
+                f"{row.get('distance_from_high_pct', 0)}% from high)"
+            )
+    lines.append("")
 
     errors = df[df.get("error").notna()] if "error" in df.columns else pd.DataFrame()
     if not errors.empty:
