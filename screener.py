@@ -124,9 +124,10 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     lows = intraday["Low"].tail(8)
     lower_lows = len(lows) >= 3 and bool(lows.is_monotonic_decreasing)
 
-    bid = float(fast_info.get("bid") or info.get("bid") or 0)
-    ask = float(fast_info.get("ask") or info.get("ask") or 0)
-    spread_pct = ((ask - bid) / last) * 100 if ask > 0 and bid > 0 and last > 0 else 0.0
+    bid = as_float(fast_info.get("bid") or info.get("bid")) or 0.0
+    ask = as_float(fast_info.get("ask") or info.get("ask")) or 0.0
+    spread_decimal = ((ask - bid) / last) if ask > 0 and bid > 0 and last > 0 else 0.0
+    spread_pct = spread_decimal * 100
 
     market_cap_raw = info.get("marketCap")
     market_cap = int(market_cap_raw) if market_cap_raw else None
@@ -170,7 +171,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         score -= 20
         reasons.append("lower lows (heuristic)")
 
-    if spread_pct > (SPREAD_PENALTY_THRESHOLD_BPS / 100):
+    if (spread_decimal * 10000) > SPREAD_PENALTY_THRESHOLD_BPS:
         score -= 15
         reasons.append("wide spread")
 
