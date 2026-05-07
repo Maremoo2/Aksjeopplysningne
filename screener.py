@@ -193,7 +193,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         reasons.append("lower lows (heuristic)")
 
     if spread_bps is not None and spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
-        reasons.append("wide spread")
+        reasons.append("wide spread (info)")
 
     if market_cap is not None and market_cap < 500_000_000:
         score -= 15

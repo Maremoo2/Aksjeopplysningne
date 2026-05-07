@@ -13,6 +13,7 @@ Lite personlig prosjekt for momentum-screening av aksjer.
   - `C-list` (score < 45)
 - Lager både CSV-rapport og kort Markdown-rapport
 - Legger til egen `Do-not-chase warning` for tickere som er kraftig opp, men langt under intradag-high
+- Inkluderer debug-felter i CSV som `day_change_source`, `spread_pct` og `spread_bps`
 
 > Merk: `yfinance` er uoffisielt og kan bli rate-limitet eller endre seg hvis Yahoo endrer API/dataformat.
 > Premarket/after-hours-data kan være ufullstendig avhengig av Yahoo-tilgjengelighet.
