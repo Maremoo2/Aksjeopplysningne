@@ -12,7 +12,7 @@ import yfinance as yf
 DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 20
 DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -8
 SPREAD_PENALTY_THRESHOLD_BPS = 30
-BPS_MULTIPLIER = 10000
+BASIS_POINTS_MULTIPLIER = 10000
 
 
 @dataclass
@@ -140,7 +140,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     bid = as_float(first_non_none(fast_info.get("bid"), info.get("bid"))) or 0.0
     ask = as_float(first_non_none(fast_info.get("ask"), info.get("ask"))) or 0.0
     spread_ratio = ((ask - bid) / last) if ask > 0 and bid > 0 and last > 0 else 0.0
-    spread_bps = spread_ratio * BPS_MULTIPLIER
+    spread_bps = spread_ratio * BASIS_POINTS_MULTIPLIER
     spread_pct = spread_ratio * 100
 
     market_cap_raw = info.get("marketCap")
