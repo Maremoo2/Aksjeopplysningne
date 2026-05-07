@@ -1,18 +1,53 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+import logging
+import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
 import yfinance as yf
 
 DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 20
 DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -8
 SPREAD_PENALTY_THRESHOLD_BPS = 30
 BASIS_POINTS_MULTIPLIER = 10000
+
+# Yahoo Finance predefined screener IDs
+YAHOO_SCREENER_IDS: dict[str, str] = {
+    "yahoo-gainers": "day_gainers",
+    "yahoo-most-active": "most_actives",
+    "yahoo-trending": "day_trending_tickers",
+    "yahoo-unusual-volume": "sec_unusual_volume",
+    "yahoo-high-beta": "high_beta_stocks",
+}
+YAHOO_SCREENER_LABEL: dict[str, str] = {
+    "yahoo-gainers": "Top Gainers",
+    "yahoo-most-active": "Most Active",
+    "yahoo-trending": "Trending Now",
+    "yahoo-unusual-volume": "Unusual Volume",
+    "yahoo-high-beta": "High Beta",
+}
+YAHOO_SCREENER_API = (
+    "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+    "?scrIds={scr_id}&count={count}&formatted=false"
+)
+YAHOO_SCREENER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; momentum-screener)",
+    "Accept": "application/json",
+}
+OTC_EXCHANGES = {"PNK", "OTC", "PINKMKT", "GREY", "OTCMKTS"}
+EXCLUDED_QUOTE_TYPES = {"MUTUALFUND", "ETF"}
+
+DEFAULT_MIN_PRICE = 2.0
+DEFAULT_MIN_MARKET_CAP = 500_000_000.0
+DEFAULT_MIN_VOLUME = 1_000_000.0
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,6 +56,7 @@ class WatchlistItem:
     category: str = ""
     news: bool = False
     sector_strength: bool = False
+    sources: list[str] = field(default_factory=list)
 
 
 def as_bool(value: Any) -> bool:
@@ -50,6 +86,134 @@ def load_watchlist(path: Path) -> list[WatchlistItem]:
             )
         )
     return items
+
+
+def fetch_yahoo_screener(source_key: str, limit: int) -> list[dict[str, Any]]:
+    """Fetch tickers from a Yahoo Finance predefined screener.
+
+    Returns a list of dicts with at minimum: ticker, exchange, price,
+    market_cap, volume.  Raises RuntimeError on failure.
+    """
+    scr_id = YAHOO_SCREENER_IDS[source_key]
+    url = YAHOO_SCREENER_API.format(scr_id=scr_id, count=limit)
+    try:
+        resp = requests.get(url, headers=YAHOO_SCREENER_HEADERS, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to fetch Yahoo screener '{source_key}': {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid JSON from Yahoo screener '{source_key}': {exc}") from exc
+
+    try:
+        quotes = (
+            data["finance"]["result"][0]["quotes"]
+            if data.get("finance", {}).get("result")
+            else []
+        )
+    except (KeyError, IndexError, TypeError):
+        quotes = []
+
+    results: list[dict[str, Any]] = []
+    for q in quotes:
+        ticker = q.get("symbol", "").strip().upper()
+        if not ticker:
+            continue
+        results.append(
+            {
+                "ticker": ticker,
+                "exchange": (q.get("fullExchangeName") or q.get("exchange") or "").upper(),
+                "price": q.get("regularMarketPrice"),
+                "market_cap": q.get("marketCap"),
+                "volume": q.get("regularMarketVolume"),
+                "quote_type": q.get("quoteType", "").upper(),
+            }
+        )
+    return results
+
+
+def fetch_yahoo_all(limit: int) -> list[dict[str, Any]]:
+    """Fetch from all Yahoo screeners, combine and deduplicate.
+
+    Each entry gets a 'sources' list showing which screeners it appeared in.
+    Returns an empty list if *all* sources fail (errors are logged).
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    any_success = False
+    errors: list[str] = []
+
+    for source_key, label in YAHOO_SCREENER_LABEL.items():
+        try:
+            entries = fetch_yahoo_screener(source_key, limit)
+            any_success = True
+        except RuntimeError as exc:
+            logger.warning("%s", exc)
+            errors.append(str(exc))
+            continue
+
+        for entry in entries:
+            ticker = entry["ticker"]
+            if ticker in seen:
+                seen[ticker]["sources"].append(label)
+                # Keep the highest market_cap / price / volume we've seen
+                for field_name in ("price", "market_cap", "volume"):
+                    existing = seen[ticker].get(field_name)
+                    incoming = entry.get(field_name)
+                    if incoming is not None and (existing is None or incoming > existing):
+                        seen[ticker][field_name] = incoming
+            else:
+                entry = dict(entry)
+                entry["sources"] = [label]
+                seen[ticker] = entry
+
+    if not any_success:
+        logger.error(
+            "All Yahoo screener fetches failed. Tip: run with --source watchlist instead."
+        )
+        for err in errors:
+            logger.error("  %s", err)
+
+    return list(seen.values())
+
+
+def apply_filters(
+    entries: list[dict[str, Any]],
+    min_price: float,
+    min_market_cap: float,
+    min_volume: float,
+    exclude_otc: bool = True,
+) -> list[dict[str, Any]]:
+    """Filter screener entries before the scoring pipeline."""
+    filtered: list[dict[str, Any]] = []
+    for entry in entries:
+        ticker = entry["ticker"]
+
+        if exclude_otc:
+            exchange = entry.get("exchange", "")
+            quote_type = entry.get("quote_type", "")
+            if exchange in OTC_EXCHANGES or quote_type in EXCLUDED_QUOTE_TYPES:
+                logger.debug("Skipping %s: OTC/pink-sheet/non-equity (%s)", ticker, exchange)
+                continue
+
+        price = entry.get("price")
+        if price is not None and price < min_price:
+            logger.debug("Skipping %s: price %.2f < min_price %.2f", ticker, price, min_price)
+            continue
+
+        mcap = entry.get("market_cap")
+        if mcap is not None and mcap < min_market_cap:
+            logger.debug(
+                "Skipping %s: market_cap %s < min_market_cap %s", ticker, mcap, min_market_cap
+            )
+            continue
+
+        vol = entry.get("volume")
+        if vol is not None and vol < min_volume:
+            logger.debug("Skipping %s: volume %s < min_volume %s", ticker, vol, min_volume)
+            continue
+
+        filtered.append(entry)
+    return filtered
 
 
 def classify(score: int) -> str:
@@ -223,6 +387,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         "score": score,
         "classification": classify(score),
         "reasons": ", ".join(reasons),
+        "sources": ", ".join(item.sources) if item.sources else "",
     }
 
 
@@ -261,8 +426,10 @@ def format_markdown_report(df: pd.DataFrame) -> str:
             continue
 
         for _, row in section.iterrows():
+            sources_str = str(row.get("sources", "")).strip()
+            sources_note = f" [{sources_str}]" if sources_str else ""
             lines.append(
-                f"- {row['ticker']}: score {int(row['score'])}. "
+                f"- {row['ticker']}{sources_note}: score {int(row['score'])}. "
                 f"{row.get('reasons', '')}. "
                 f"Endring {row.get('day_change_pct', 0)}% "
                 f"(kilde: {row.get('day_change_source', '')})."
@@ -297,19 +464,106 @@ def format_markdown_report(df: pd.DataFrame) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Market momentum screener")
-    parser.add_argument("--input", default="watchlist.csv", help="CSV med ticker,category[,news,sector_strength]")
+    parser.add_argument(
+        "--input",
+        default="watchlist.csv",
+        help="CSV med ticker,category[,news,sector_strength] (brukes med --source watchlist)",
+    )
     parser.add_argument("--outdir", default=".", help="Mappe for output-filer")
+
+    all_sources = ["watchlist"] + list(YAHOO_SCREENER_IDS.keys()) + ["yahoo-all"]
+    parser.add_argument(
+        "--source",
+        default="watchlist",
+        choices=all_sources,
+        help=(
+            "Datakilde for tickers. "
+            "'watchlist' bruker --input CSV (standard). "
+            "Yahoo-alternativer henter fra Yahoo Finance screeners."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=25,
+        help="Maks antall tickers å hente fra Yahoo screeners (standard: 25)",
+    )
+    parser.add_argument(
+        "--min-price",
+        type=float,
+        default=DEFAULT_MIN_PRICE,
+        help=f"Minimum aksjekurs for Yahoo-filtrering (standard: {DEFAULT_MIN_PRICE})",
+    )
+    parser.add_argument(
+        "--min-market-cap",
+        type=float,
+        default=DEFAULT_MIN_MARKET_CAP,
+        help=f"Minimum markedsverdi for Yahoo-filtrering (standard: {DEFAULT_MIN_MARKET_CAP:.0f})",
+    )
+    parser.add_argument(
+        "--min-volume",
+        type=float,
+        default=DEFAULT_MIN_VOLUME,
+        help=f"Minimum volum for Yahoo-filtrering (standard: {DEFAULT_MIN_VOLUME:.0f})",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     args = parse_args()
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    watchlist = load_watchlist(Path(args.input))
-    rows: list[dict[str, Any]] = []
+    source = args.source
 
+    if source == "watchlist":
+        watchlist = load_watchlist(Path(args.input))
+    else:
+        # Fetch from Yahoo screener(s)
+        if source == "yahoo-all":
+            entries = fetch_yahoo_all(args.limit)
+            if not entries:
+                print(
+                    "ERROR: Could not fetch any tickers from Yahoo screeners. "
+                    "Try running with --source watchlist instead.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            try:
+                entries = fetch_yahoo_screener(source, args.limit)
+            except RuntimeError as exc:
+                print(
+                    f"ERROR: {exc}\n"
+                    "Tip: run with --source watchlist to use your local watchlist.csv instead.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        entries = apply_filters(
+            entries,
+            min_price=args.min_price,
+            min_market_cap=args.min_market_cap,
+            min_volume=args.min_volume,
+        )
+
+        if not entries:
+            print(
+                "WARNING: All fetched tickers were filtered out by min_price/min_market_cap/"
+                "min_volume/OTC rules. Try relaxing the filter arguments.",
+                file=sys.stderr,
+            )
+
+        watchlist = [
+            WatchlistItem(
+                ticker=e["ticker"],
+                sources=e.get("sources", []),
+            )
+            for e in entries
+        ]
+
+    rows: list[dict[str, Any]] = []
     for item in watchlist:
         try:
             rows.append(score_stock(item))
