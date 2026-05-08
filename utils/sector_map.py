@@ -19,8 +19,36 @@ FALLBACK_SECTOR_MAP: dict[str, SectorInfo] = {
     "NET": SectorInfo("Technology", "Software - Infrastructure", ("Cloud", "Cybersecurity")),
     "FTNT": SectorInfo("Technology", "Software - Infrastructure", ("Cybersecurity",)),
     "IONQ": SectorInfo("Technology", "Computer Hardware", ("Quantum", "High Beta")),
-    "IREN": SectorInfo("Financial Services", "Capital Markets", ("Bitcoin Miner", "AI Datacenter")),
-    "APLD": SectorInfo("Technology", "Software - Infrastructure", ("AI Datacenter", "High Beta")),
+    "IREN": SectorInfo(
+        "Financial Services",
+        "Capital Markets",
+        ("Crypto Miner", "AI Datacenter", "Power Infrastructure"),
+    ),
+    "APLD": SectorInfo(
+        "Technology",
+        "Software - Infrastructure",
+        ("AI Datacenter", "HPC / Compute Infrastructure", "Power Infrastructure"),
+    ),
+    "CORE": SectorInfo(
+        "Technology",
+        "Information Technology Services",
+        ("AI Datacenter", "HPC / Compute Infrastructure", "Power Infrastructure"),
+    ),
+    "MARA": SectorInfo(
+        "Financial Services",
+        "Capital Markets",
+        ("Crypto Miner", "AI Datacenter", "Power Infrastructure"),
+    ),
+    "HUT": SectorInfo(
+        "Financial Services",
+        "Capital Markets",
+        ("Crypto Miner", "AI Datacenter", "HPC / Compute Infrastructure"),
+    ),
+    "WULF": SectorInfo(
+        "Financial Services",
+        "Capital Markets",
+        ("Crypto Miner", "Power Infrastructure", "HPC / Compute Infrastructure"),
+    ),
 }
 
 
@@ -35,17 +63,13 @@ def resolve_sector_info(ticker: str, info: dict) -> SectorInfo:
     sector = str(info.get("sector") or "").strip()
     industry = str(info.get("industry") or "").strip()
     thematic_tags = _split_themes(info.get("theme"))
-
-    if sector and industry:
-        return SectorInfo(
-            sector=sector,
-            industry=industry,
-            thematic_tags=tuple(thematic_tags),
-        )
-
     fallback = FALLBACK_SECTOR_MAP.get(ticker.upper())
+
     if fallback:
-        return fallback
+        sector = sector or fallback.sector
+        industry = industry or fallback.industry
+        if not thematic_tags:
+            thematic_tags = list(fallback.thematic_tags)
 
     return SectorInfo(
         sector=sector or "Unknown",

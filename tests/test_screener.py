@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+import argparse
+import tempfile
+import unittest
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import patch
+
+import pandas as pd
+
+import screener
+
+
+class ScreenerTests(unittest.TestCase):
+    def test_compute_setup_bucket_moves_extended_a_list_name_to_a2(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "RKLB",
+                    "score": 82,
+                    "classification": "A-list",
+                    "day_change_pct": 32.0,
+                    "distance_from_high_pct": -1.1,
+                    "volume_ratio": 4.2,
+                    "last": 12.4,
+                    "vwap": 11.8,
+                    "sources": "Top Gainers, Most Active",
+                }
+            ]
+        )
+        result = screener.compute_setup_bucket(frame)
+        self.assertEqual(result.iloc[0], "A2")
+
+    def test_format_markdown_report_marks_missing_premarket_data_as_unavailable(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "AMD",
+                    "score": 80,
+                    "classification": "A-list",
+                    "setup_bucket": "A1",
+                    "setup": "breakout",
+                    "sector": "Technology",
+                    "industry": "Semiconductors",
+                    "thematic_tags": "Semiconductor, AI Compute",
+                    "market_cap": 1_000_000_000,
+                    "market_cap_tier": "Large",
+                    "float_label": "High",
+                    "volatility_risk": "Low",
+                    "atr_pct": 4.5,
+                    "atr_volatility": "Medium",
+                    "volume_ratio": 2.3,
+                    "distance_from_high_pct": -1.2,
+                    "premarket_gap_pct": "",
+                    "premarket_volume": "",
+                    "earnings_date": "",
+                    "earnings_warning": "None",
+                    "preferred_entry_low": 99.0,
+                    "preferred_entry_high": 100.0,
+                    "breakout_level": 101.0,
+                    "stop_level": 96.0,
+                    "target_1": 104.0,
+                    "target_2": 107.0,
+                    "risk": "Low",
+                    "chase_risk": "Low",
+                    "position_size_pct": 0.05,
+                    "suggested_hold": "2–5 days",
+                    "reasons": "green, above VWAP",
+                    "day_change_pct": 4.2,
+                    "day_change_source": "previous_close",
+                }
+            ]
+        )
+
+        markdown = screener.format_markdown_report(frame)
+        self.assertIn("Premarket: unavailable", markdown)
+        self.assertNotIn("Premarket gap: %", markdown)
+
+    def test_main_creates_shareable_trading_brief(self) -> None:
+        sample_row = {
+            "ticker": "AMD",
+            "category": "",
+            "last": 100.0,
+            "open": 95.0,
+            "high": 101.0,
+            "low": 94.0,
+            "volume": 1000000,
+            "avg_volume_20d": 500000,
+            "volume_ratio": 2.0,
+            "day_change_pct": 5.0,
+            "day_change_source": "previous_close",
+            "previous_close": 95.2,
+            "distance_from_high_pct": -0.99,
+            "range_position": 0.8,
+            "vwap": 99.0,
+            "premarket": None,
+            "after_hours": None,
+            "spread_pct": 0.1,
+            "spread_bps": 10.0,
+            "market_cap": 310_000_000_000,
+            "market_cap_tier": "Large",
+            "float_shares": 200_000_000,
+            "float_label": "High",
+            "volatility_risk": "Low",
+            "atr_pct": 4.5,
+            "atr_volatility": "Medium",
+            "premarket_gap_pct": None,
+            "premarket_volume": None,
+            "earnings_date": "2026-05-15",
+            "earnings_warning": "Watch",
+            "sector": "Technology",
+            "industry": "Semiconductors",
+            "thematic_tags": "Semiconductor, AI Compute",
+            "catalyst_headlines": "",
+            "sentiment_tag": "Neutral",
+            "insider_activity": "N/A (placeholder)",
+            "score": 84,
+            "classification": "A-list",
+            "reasons": "green, volume > 2x, near high, above VWAP, institutional quality",
+            "sources": "Top Gainers, Most Active",
+        }
+        sample_regime = {
+            "market_regime": "Risk-on",
+            "momentum_odds": "Favorable",
+            "sector_strength": {
+                "SOXX": "Strong",
+                "AI Software": "Strong",
+                "Crypto Miners": "Strong",
+                "Cyber": "Neutral",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_now = datetime(2026, 5, 8, 19, 40)
+            with (
+                patch.object(
+                    screener,
+                    "parse_args",
+                    return_value=argparse.Namespace(
+                        input="watchlist.csv",
+                        outdir=temp_dir,
+                        source="watchlist",
+                        limit=25,
+                        min_price=2.0,
+                        min_market_cap=500_000_000.0,
+                        min_volume=1_000_000.0,
+                    ),
+                ),
+                patch.object(screener, "load_watchlist", return_value=[screener.WatchlistItem(ticker="AMD")]),
+                patch.object(screener, "score_stock", return_value=sample_row),
+                patch.object(screener, "build_regime_report", return_value=sample_regime),
+                patch.object(screener, "datetime") as mock_datetime,
+            ):
+                mock_datetime.now.return_value = fake_now
+                screener.main()
+
+            brief_path = Path(temp_dir) / "shareable" / "trading_brief_20260508_1940.md"
+            self.assertTrue(brief_path.exists())
+            brief = brief_path.read_text(encoding="utf-8")
+            self.assertIn("Market regime: Risk-on", brief)
+            self.assertIn("Strong sectors: Semiconductors, AI Software, Crypto Miners", brief)
+            self.assertIn("## Top actionable names", brief)
+            self.assertIn("## Paste-to-ChatGPT", brief)
+
+
+if __name__ == "__main__":
+    unittest.main()

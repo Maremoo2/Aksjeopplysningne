@@ -61,6 +61,35 @@ class StrategyEngineTests(unittest.TestCase):
         self.assertTrue(expected_fields.issubset(plan.keys()))
         self.assertLessEqual(plan["preferred_entry_low"], plan["preferred_entry_high"])
         self.assertGreater(plan["target_2"], plan["target_1"])
+        self.assertEqual(plan["position_size_pct"], 0.05)
+
+    def test_classify_setup_marks_large_intraday_move_as_extended_without_strong_continuation(self) -> None:
+        row = {
+            "day_change_pct": 22.0,
+            "distance_from_high_pct": -1.8,
+            "volume_ratio": 2.4,
+            "atr_pct": 4.0,
+            "last": 50.0,
+            "vwap": 48.0,
+        }
+        self.assertEqual(classify_setup(row), "extended/parabolic")
+
+    def test_generate_trade_plan_raises_risk_floor_for_low_float_momentum_name(self) -> None:
+        plan = generate_trade_plan(
+            {
+                "ticker": "RKLB",
+                "day_change_pct": 18.5,
+                "distance_from_high_pct": -1.0,
+                "volume_ratio": 2.8,
+                "atr_pct": 4.2,
+                "last": 12.0,
+                "vwap": 11.4,
+                "earnings_warning": "None",
+                "float_label": "Low",
+            }
+        )
+        self.assertEqual(plan["risk"], "Medium")
+        self.assertEqual(plan["position_size_pct"], 0.03)
 
     def test_enrich_with_strategy_adds_columns(self) -> None:
         frame = pd.DataFrame(

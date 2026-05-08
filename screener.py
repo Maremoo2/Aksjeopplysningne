@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 import requests
 import yfinance as yf
+from market_regime import build_regime_report
 from strategy_engine import enrich_with_strategy
 from utils.sector_map import resolve_sector_info
 
@@ -20,6 +21,10 @@ from utils.sector_map import resolve_sector_info
 # meaningfully off highs (likely poor R/R for fresh entries).
 DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 15
 DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -7
+A1_EXTENDED_DAY_CHANGE_THRESHOLD = 20
+A1_HARD_EXTENDED_DAY_CHANGE_THRESHOLD = 25
+A1_STRONG_CONTINUATION_DISTANCE_THRESHOLD = -1.5
+A1_STRONG_CONTINUATION_VOLUME_THRESHOLD = 3.0
 SPREAD_PENALTY_THRESHOLD_BPS = 30
 BASIS_POINTS_MULTIPLIER = 10000
 
@@ -641,9 +646,19 @@ def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
 
     sources_series = df.get("sources") if "sources" in df.columns else pd.Series([""] * len(df), index=df.index)
     has_most_active = sources_series.astype(str).str.contains("Most Active", case=False, na=False)
+    volume_ratio_numeric = pd.to_numeric(
+        df["volume_ratio"] if "volume_ratio" in df.columns else _zeros, errors="coerce"
+    ).fillna(0.0)
 
     in_do_not_chase = (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD) & (
         distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD
+    )
+    strong_continuation = (
+        above_vwap
+        & (day_change_numeric <= A1_HARD_EXTENDED_DAY_CHANGE_THRESHOLD)
+        & (distance_from_high_numeric >= A1_STRONG_CONTINUATION_DISTANCE_THRESHOLD)
+        & (volume_ratio_numeric >= A1_STRONG_CONTINUATION_VOLUME_THRESHOLD)
+        & has_most_active
     )
 
     a_score = score_numeric >= 70
@@ -651,7 +666,8 @@ def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
         a_score
         & (~in_do_not_chase)
         & (distance_from_high_numeric > -8)
-        & ((day_change_numeric < 25) | has_most_active)
+        & (day_change_numeric < A1_HARD_EXTENDED_DAY_CHANGE_THRESHOLD)
+        & ((day_change_numeric <= A1_EXTENDED_DAY_CHANGE_THRESHOLD) | strong_continuation)
         & above_vwap
     )
     a2_mask = a_score & (~a1_mask)
@@ -666,9 +682,9 @@ def compute_setup_bucket(df: pd.DataFrame) -> pd.Series:
 
 
 _CHATGPT_PROMPT = (
-    "Review this momentum report. Which 3 names have the best setup, "
+    "Review this trading brief. Which 3 names have the best setup, "
     "which are chase-risk, and which should be ignored? "
-    "Focus on A1/A2/B-list, sources, VWAP, distance from high, and do-not-chase warnings."
+    "Focus on market regime, setup, VWAP, distance from high, ATR, risk, entry, stop and position size."
 )
 
 
@@ -677,6 +693,92 @@ def _str_col(frame: pd.DataFrame, col: str) -> pd.Series:
     if col in frame.columns:
         return frame[col].astype(str)
     return pd.Series([""] * len(frame), index=frame.index)
+
+
+def _numeric_col(frame: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
+    if col in frame.columns:
+        values: Any = frame[col]
+    else:
+        values = pd.Series([default] * len(frame), index=frame.index)
+    return pd.to_numeric(values, errors="coerce").fillna(default)
+
+
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+def _display_text(value: Any, default: str = "n/a") -> str:
+    return default if _is_missing(value) else str(value)
+
+
+def _display_number(
+    value: Any,
+    *,
+    default: str = "n/a",
+    suffix: str = "",
+    decimals: int | None = None,
+) -> str:
+    numeric = as_float(value)
+    if numeric is None:
+        return default
+    numeric = float(numeric)
+    if decimals is None:
+        text = str(int(numeric)) if numeric % 1 == 0 else str(numeric)
+    else:
+        text = f"{numeric:.{decimals}f}"
+    return f"{text}{suffix}"
+
+
+def _display_signed_pct(value: Any, default: str = "n/a") -> str:
+    numeric = as_float(value)
+    if numeric is None:
+        return default
+    return f"{numeric:+.2f}%"
+
+
+def _display_premarket_summary(row: pd.Series) -> str:
+    gap = _display_number(row.get("premarket_gap_pct"), default="unavailable", suffix="%", decimals=2)
+    volume = _display_number(row.get("premarket_volume"), default="unavailable")
+    if gap == "unavailable" and volume == "unavailable":
+        return "Premarket: unavailable"
+    return f"Premarket gap: {gap} | Premarket volume: {volume}"
+
+
+def _display_position_size(value: Any) -> str:
+    numeric = as_float(value)
+    if numeric is None:
+        return "n/a"
+    return f"{float(numeric):.2f} ({float(numeric) * 100:.0f}% of book)"
+
+
+def _rank_candidates(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy()
+    src = _str_col(frame, "sources")
+    frame["_multi"] = src.apply(lambda s: 1 if "," in s.strip() else 0)
+    dist_h = _numeric_col(frame, "distance_from_high_pct", -100)
+    frame["_near_high"] = (dist_h > -8).astype(int)
+    vwap_n = _numeric_col(frame, "vwap")
+    last_n = _numeric_col(frame, "last")
+    frame["_above_vwap"] = (last_n > vwap_n).astype(int)
+    vol_r = _numeric_col(frame, "volume_ratio")
+    frame["_vol2x"] = (vol_r > 2).astype(int)
+    frame["_score"] = _numeric_col(frame, "score")
+    return frame.sort_values(
+        by=["_multi", "_near_high", "_above_vwap", "_vol2x", "_score"],
+        ascending=[False, False, False, False, False],
+    )
+
+
+def _build_market_regime_fallback() -> dict[str, Any]:
+    return {
+        "market_regime": "Unknown",
+        "momentum_odds": "Unknown",
+        "sector_strength": {},
+    }
 
 
 def format_market_cap(value: Any) -> str:
@@ -708,23 +810,6 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     a1_mask = (df["setup_bucket"] == "A1") & ~has_error & ~in_do_not_chase
     b_mask = (df["setup_bucket"] == "B-list") & ~has_error & ~in_do_not_chase
     primary = df[a1_mask | b_mask].copy()
-
-    def _rank_candidates(frame: pd.DataFrame) -> pd.DataFrame:
-        frame = frame.copy()
-        src = _str_col(frame, "sources")
-        frame["_multi"] = src.apply(lambda s: 1 if "," in s.strip() else 0)
-        dist_h = pd.to_numeric(frame.get("distance_from_high_pct", 0), errors="coerce").fillna(-100)
-        frame["_near_high"] = (dist_h > -8).astype(int)
-        vwap_n = pd.to_numeric(frame.get("vwap", 0), errors="coerce").fillna(0)
-        last_n = pd.to_numeric(frame.get("last", 0), errors="coerce").fillna(0)
-        frame["_above_vwap"] = (last_n > vwap_n).astype(int)
-        vol_r = pd.to_numeric(frame.get("volume_ratio", 0), errors="coerce").fillna(0)
-        frame["_vol2x"] = (vol_r > 2).astype(int)
-        frame["_score"] = pd.to_numeric(frame.get("score", 0), errors="coerce").fillna(0)
-        return frame.sort_values(
-            by=["_multi", "_near_high", "_above_vwap", "_vol2x", "_score"],
-            ascending=[False, False, False, False, False],
-        )
 
     if not primary.empty:
         primary = _rank_candidates(primary)
@@ -841,6 +926,128 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     return lines
 
 
+def format_shareable_report(df: pd.DataFrame, regime_report: dict[str, Any]) -> str:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [f"# Trading Brief ({now})", ""]
+    if "classification" not in df.columns:
+        df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
+    missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}
+    if missing_cols:
+        df = df.assign(**missing_cols)
+
+    if "setup_bucket" not in df.columns:
+        df = df.copy()
+        df["setup_bucket"] = compute_setup_bucket(df)
+
+    if "error" in df.columns:
+        has_error = df["error"].astype(str).str.strip() != ""
+    else:
+        has_error = pd.Series(False, index=df.index)
+
+    day_change_numeric = _numeric_col(df, "day_change_pct")
+    distance_from_high_numeric = _numeric_col(df, "distance_from_high_pct")
+    in_do_not_chase = (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD) & (
+        distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD
+    )
+
+    sector_labels = {"SOXX": "Semiconductors"}
+    strong_sectors = [
+        sector_labels.get(name, name)
+        for name, strength in regime_report.get("sector_strength", {}).items()
+        if strength == "Strong"
+    ]
+
+    lines.extend(
+        [
+            "## Market regime",
+            f"- Market regime: {regime_report.get('market_regime', 'Unknown')}",
+            f"- Momentum odds: {regime_report.get('momentum_odds', 'Unknown')}",
+            f"- Strong sectors: {', '.join(strong_sectors) if strong_sectors else 'None'}",
+            "",
+            "## Top actionable names",
+        ]
+    )
+
+    actionable_mask = ((df["setup_bucket"] == "A1") | (df["setup_bucket"] == "B-list")) & ~has_error & ~in_do_not_chase
+    actionable = _rank_candidates(df[actionable_mask]).head(5)
+    if actionable.empty:
+        fallback = df[(df["setup_bucket"] == "A2") & ~has_error]
+        actionable = _rank_candidates(fallback).head(5) if not fallback.empty else fallback
+
+    if actionable.empty:
+        lines.append("- (none)")
+    else:
+        for _, row in actionable.iterrows():
+            lines.extend(
+                [
+                    f"### {row.get('ticker', '')}",
+                    f"- Classification: {_display_text(row.get('setup_bucket'), 'n/a')}",
+                    f"- Setup: {_display_text(row.get('setup'), 'n/a')}",
+                    f"- Day change: {_display_signed_pct(row.get('day_change_pct'))}",
+                    f"- Relative volume: {_display_number(row.get('volume_ratio'), suffix='x', decimals=2)}",
+                    f"- Distance from high: {_display_number(row.get('distance_from_high_pct'), suffix='%', decimals=2)}",
+                    f"- Sector/theme: {_display_text(row.get('sector'), 'Unknown')} / {_display_text(row.get('industry'), 'Unknown')} ({_display_text(row.get('thematic_tags'), 'None')})",
+                    f"- Entry: {_display_number(row.get('preferred_entry_low'), decimals=2)}–{_display_number(row.get('preferred_entry_high'), decimals=2)}",
+                    f"- Breakout: >{_display_number(row.get('breakout_level'), decimals=2)}",
+                    f"- Stop: <{_display_number(row.get('stop_level'), decimals=2)}",
+                    f"- Targets: {_display_number(row.get('target_1'), decimals=2)} / {_display_number(row.get('target_2'), decimals=2)}",
+                    f"- Risk: {_display_text(row.get('risk'), 'n/a')}",
+                    f"- Chase risk: {_display_text(row.get('chase_risk'), 'n/a')}",
+                    f"- Suggested size: {_display_position_size(row.get('position_size_pct'))}",
+                    f"- Hold window: {_display_text(row.get('suggested_hold'), 'n/a')}",
+                    "",
+                ]
+            )
+
+    lines.append("## Do-not-chase list")
+    extended_mask = (df["setup_bucket"] == "A2") | in_do_not_chase | (_str_col(df, "chase_risk") == "High")
+    dnc = df[extended_mask & ~has_error]
+    if dnc.empty:
+        lines.append("- (none)")
+    else:
+        for _, row in dnc.drop_duplicates(subset=["ticker"]).iterrows():
+            lines.append(
+                f"- {row.get('ticker', '')}: {_display_text(row.get('setup_bucket'), 'n/a')} | "
+                f"{_display_signed_pct(row.get('day_change_pct'))} | "
+                f"distance from high {_display_number(row.get('distance_from_high_pct'), suffix='%', decimals=2)} | "
+                f"chase risk {_display_text(row.get('chase_risk'), 'n/a')}"
+            )
+    lines.append("")
+
+    lines.append("## Ignore / weak list")
+    weak_mask = ((df["setup_bucket"] == "C-list") | (_str_col(df, "risk") == "High")) & ~has_error
+    weak = df[weak_mask].copy()
+    if weak.empty:
+        lines.append("- (none)")
+    else:
+        reasons_col = _str_col(weak, "reasons")
+        weak["_red"] = (_numeric_col(weak, "day_change_pct") < 0).astype(int)
+        weak["_far"] = (_numeric_col(weak, "distance_from_high_pct") < -10).astype(int)
+        weak["_spread"] = (_numeric_col(weak, "spread_bps") > SPREAD_PENALTY_THRESHOLD_BPS).astype(int)
+        weak["_ll"] = reasons_col.str.contains("lower lows", case=False, na=False).astype(int)
+        weak["_score"] = _numeric_col(weak, "score")
+        weak = weak.sort_values(
+            by=["_red", "_far", "_spread", "_ll", "_score"],
+            ascending=[False, False, False, False, True],
+        )
+        for _, row in weak.head(5).iterrows():
+            lines.append(
+                f"- {row.get('ticker', '')}: {_display_signed_pct(row.get('day_change_pct'))} | "
+                f"distance from high {_display_number(row.get('distance_from_high_pct'), suffix='%', decimals=2)} | "
+                f"spread {_display_number(row.get('spread_bps'), suffix=' bps', decimals=0)} | "
+                f"{_display_text(row.get('reasons'), 'weak momentum')}"
+            )
+    lines.append("")
+
+    lines.append("## Paste-to-ChatGPT")
+    lines.append("```")
+    lines.append(_CHATGPT_PROMPT)
+    lines.append("```")
+    lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
 def format_markdown_report(df: pd.DataFrame) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [f"# Daily Momentum Report ({now})", ""]
@@ -863,8 +1070,8 @@ def format_markdown_report(df: pd.DataFrame) -> str:
         df["setup_bucket"] = compute_setup_bucket(df)
 
     # Build in_do_not_chase mask for the warning section
-    day_change_numeric = pd.to_numeric(df.get("day_change_pct", 0), errors="coerce").fillna(0.0)
-    distance_from_high_numeric = pd.to_numeric(df.get("distance_from_high_pct", 0), errors="coerce").fillna(0.0)
+    day_change_numeric = _numeric_col(df, "day_change_pct")
+    distance_from_high_numeric = _numeric_col(df, "distance_from_high_pct")
     in_do_not_chase = (day_change_numeric > DO_NOT_CHASE_DAY_CHANGE_THRESHOLD) & (
         distance_from_high_numeric <= DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD
     )
@@ -917,8 +1124,8 @@ def format_markdown_report(df: pd.DataFrame) -> str:
                 f"Relative volume: {row.get('volume_ratio', 'n/a')}x | Distance from high: {row.get('distance_from_high_pct', 0)}%"
             )
             lines.append(
-                f"  - Premarket gap: {row.get('premarket_gap_pct', 'n/a')}% | Premarket volume: {row.get('premarket_volume', 'n/a')} | "
-                f"Earnings: {row.get('earnings_date', 'n/a')} ({row.get('earnings_warning', 'None')})"
+                f"  - {_display_premarket_summary(row)} | "
+                f"Earnings: {_display_text(row.get('earnings_date'), 'n/a')} ({_display_text(row.get('earnings_warning'), 'None')})"
             )
             if str(row.get("catalyst_headlines", "")).strip():
                 lines.append(f"  - Catalyst: {row.get('catalyst_headlines')} ({row.get('sentiment_tag', 'Neutral')})")
@@ -929,10 +1136,10 @@ def format_markdown_report(df: pd.DataFrame) -> str:
             )
             lines.append(
                 f"  - Risk: {row.get('risk', 'n/a')} | Chase risk: {row.get('chase_risk', 'n/a')} | "
-                f"Position size: {row.get('position_size_pct', 'n/a')} | Hold: {row.get('suggested_hold', 'n/a')}"
+                f"Position size: {_display_position_size(row.get('position_size_pct'))} | Hold: {row.get('suggested_hold', 'n/a')}"
             )
             lines.append(
-                f"  - Momentum detail: {row.get('reasons', '')}. Endring {row.get('day_change_pct', 0)}% "
+                f"  - Momentum detail: {row.get('reasons', '')}. Change {row.get('day_change_pct', 0)}% "
                 f"(kilde: {row.get('day_change_source', '')})."
             )
     lines.append("")
@@ -1096,17 +1303,26 @@ def main() -> None:
     json_path = outdir / f"momentum_report_{stamp}.json"
 
     df.to_csv(csv_path, index=False)
-    report = format_markdown_report(df.fillna(""))
+    report = format_markdown_report(df)
     md_path.write_text(report, encoding="utf-8")
     json_path.write_text(
         json.dumps(df.fillna("").to_dict(orient="records"), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    shareable_dir = outdir / "shareable"
+    shareable_dir.mkdir(parents=True, exist_ok=True)
+    brief_path = shareable_dir / f"trading_brief_{stamp}.md"
+    try:
+        regime_report = build_regime_report()
+    except Exception:
+        regime_report = _build_market_regime_fallback()
+    brief_path.write_text(format_shareable_report(df, regime_report), encoding="utf-8")
 
     print(report)
     print(f"Saved CSV report: {csv_path}")
     print(f"Saved Markdown report: {md_path}")
     print(f"Saved JSON report: {json_path}")
+    print(f"Saved shareable trading brief: {brief_path}")
 
 
 if __name__ == "__main__":
