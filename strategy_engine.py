@@ -107,9 +107,23 @@ def _position_size_pct(
         return 0.05
     if risk == "Medium":
         return 0.03
-    if chase_risk == "High" or day_change > HARD_EXTENDED_DAY_CHANGE_THRESHOLD or atr_pct >= 7 or float_label == "Low":
+    if _use_minimum_high_risk_size(chase_risk, day_change, atr_pct, float_label):
         return 0.01
     return 0.02
+
+
+def _use_minimum_high_risk_size(
+    chase_risk: str,
+    day_change: float,
+    atr_pct: float,
+    float_label: str,
+) -> bool:
+    return (
+        chase_risk == "High"
+        or day_change > HARD_EXTENDED_DAY_CHANGE_THRESHOLD
+        or atr_pct >= 7
+        or float_label == "Low"
+    )
 
 
 def generate_trade_plan(row: dict[str, Any]) -> dict[str, Any]:

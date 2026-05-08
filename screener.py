@@ -725,6 +725,7 @@ def _display_number(
     numeric = as_float(value)
     if numeric is None:
         return default
+    numeric = float(numeric)
     if decimals is None:
         text = str(int(numeric)) if numeric.is_integer() else str(numeric)
     else:
@@ -745,6 +746,13 @@ def _display_premarket_summary(row: pd.Series) -> str:
     if gap == "unavailable" and volume == "unavailable":
         return "Premarket: unavailable"
     return f"Premarket gap: {gap} | Premarket volume: {volume}"
+
+
+def _display_position_size(value: Any) -> str:
+    numeric = as_float(value)
+    if numeric is None:
+        return "n/a"
+    return f"{float(numeric):.2f} ({float(numeric) * 100:.0f}% of book)"
 
 
 def _rank_candidates(frame: pd.DataFrame) -> pd.DataFrame:
@@ -985,7 +993,7 @@ def format_shareable_report(df: pd.DataFrame, regime_report: dict[str, Any]) -> 
                     f"- Targets: {_display_number(row.get('target_1'), decimals=2)} / {_display_number(row.get('target_2'), decimals=2)}",
                     f"- Risk: {_display_text(row.get('risk'), 'n/a')}",
                     f"- Chase risk: {_display_text(row.get('chase_risk'), 'n/a')}",
-                    f"- Suggested size: {_display_number(row.get('position_size_pct'), decimals=2)}",
+                    f"- Suggested size: {_display_position_size(row.get('position_size_pct'))}",
                     f"- Hold window: {_display_text(row.get('suggested_hold'), 'n/a')}",
                     "",
                 ]
@@ -1128,7 +1136,7 @@ def format_markdown_report(df: pd.DataFrame) -> str:
             )
             lines.append(
                 f"  - Risk: {row.get('risk', 'n/a')} | Chase risk: {row.get('chase_risk', 'n/a')} | "
-                f"Position size: {row.get('position_size_pct', 'n/a')} | Hold: {row.get('suggested_hold', 'n/a')}"
+                f"Position size: {_display_position_size(row.get('position_size_pct'))} | Hold: {row.get('suggested_hold', 'n/a')}"
             )
             lines.append(
                 f"  - Momentum detail: {row.get('reasons', '')}. Endring {row.get('day_change_pct', 0)}% "
