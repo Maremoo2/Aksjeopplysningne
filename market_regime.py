@@ -20,6 +20,10 @@ INDEX_TICKERS = {
     "Cyber": "CIBR",
 }
 
+VIX_PANIC_THRESHOLD = 30
+VIX_RISK_OFF_THRESHOLD = 22
+VIX_RISK_ON_CEILING = 20
+
 
 def _pct_change(ticker: str) -> float | None:
     try:
@@ -43,12 +47,12 @@ def classify_regime(metrics: dict[str, float | None]) -> str:
     soxx = metrics.get("SOXX")
     btc = metrics.get("BTC")
 
-    if vix is not None and vix > 30:
+    if vix is not None and vix > VIX_PANIC_THRESHOLD:
         return "Panic"
-    if vix is not None and vix > 22 and ((spy or 0) < 0 or (qqq or 0) < 0):
+    if vix is not None and vix > VIX_RISK_OFF_THRESHOLD and ((spy or 0) < 0 or (qqq or 0) < 0):
         return "Risk-off"
     positives = sum((value or 0) > 0 for value in (spy, qqq, soxx, btc))
-    if positives >= 3 and (vix is None or vix < 20):
+    if positives >= 3 and (vix is None or vix < VIX_RISK_ON_CEILING):
         return "Risk-on"
     if positives <= 1:
         return "Mean-reversion environment"

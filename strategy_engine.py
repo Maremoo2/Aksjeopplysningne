@@ -8,8 +8,8 @@ from typing import Any
 
 import pandas as pd
 
-DEFAULT_ATR_PCT_FALLBACK = 0.03
-DEFAULT_PRICE_FLOOR_FALLBACK = 0.01
+FALLBACK_ATR_PCT = 0.03
+FALLBACK_PRICE_FLOOR = 0.01
 ENTRY_LOW_ATR_MULTIPLIER = 0.7
 ENTRY_HIGH_ATR_MULTIPLIER = 0.3
 BREAKOUT_ATR_MULTIPLIER = 0.5
@@ -75,7 +75,7 @@ def generate_trade_plan(row: dict[str, Any]) -> dict[str, Any]:
     atr_move = (
         last * (atr_pct / 100.0)
         if last > 0 and atr_pct > 0
-        else max(last * DEFAULT_ATR_PCT_FALLBACK, DEFAULT_PRICE_FLOOR_FALLBACK)
+        else max(last * FALLBACK_ATR_PCT, FALLBACK_PRICE_FLOOR)
     )
     near_high = _to_float(row.get("distance_from_high_pct")) > -2
 

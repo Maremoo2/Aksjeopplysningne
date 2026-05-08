@@ -16,6 +16,8 @@ import yfinance as yf
 from strategy_engine import enrich_with_strategy
 from utils.sector_map import resolve_sector_info
 
+# Risk guardrail tuned for momentum names: flags fast moves that are already
+# meaningfully off highs (likely poor R/R for fresh entries).
 DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 15
 DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -7
 SPREAD_PENALTY_THRESHOLD_BPS = 30
@@ -359,12 +361,12 @@ def earnings_warning(next_earnings: datetime | None) -> tuple[str | None, str]:
 
 
 def sentiment_from_headline(headline: str) -> str:
-    h = headline.lower()
+    headline_lower = headline.lower()
     positive_terms = ("upgrade", "beat", "expansion", "contract win", "new contract", "partnership", "record")
     negative_terms = ("downgrade", "miss", "investigation", "lawsuit", "cut", "recall")
-    if any(term in h for term in positive_terms):
+    if any(term in headline_lower for term in positive_terms):
         return "Positive"
-    if any(term in h for term in negative_terms):
+    if any(term in headline_lower for term in negative_terms):
         return "Negative"
     return "Neutral"
 
