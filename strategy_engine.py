@@ -25,7 +25,7 @@ def classify_setup(row: dict[str, Any]) -> str:
     atr_pct = _to_float(row.get("atr_pct"))
     above_vwap = _to_float(row.get("last")) > _to_float(row.get("vwap"))
 
-    if day_change > 15 and abs(distance_from_high) > 7:
+    if day_change > 15 and distance_from_high < -7:
         return "extended/parabolic"
     if distance_from_high > -2 and volume_ratio >= 2:
         return "breakout"

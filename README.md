@@ -7,7 +7,7 @@ Lite personlig prosjekt for momentum-screening av aksjer.
 - Leser tickere fra `watchlist.csv` eller henter live fra Yahoo Finance screeners
 - Henter intradag-data via `yfinance` (pris, volum, høy/lav, pre/after-hours når tilgjengelig)
 - Regner ut momentum-score (0-100-ish) basert på enkle regler
-- Beriker hver ticker med sektor/industri/thematic tags, market-cap-tier, float-risk, ATR%, premarket gap/volum og earnings-nærhet
+- Beriker hver ticker med sektor/industri/thematic tags, market-cap-tier, float-risk, ATR%, premarket gap/volume og earnings-nærhet
 - Lager enkel catalyst-hook (nyhetsheadlines + sentiment-tag) og insider-placeholder
 - Deler tickere i:
   - `A-list` (score >= 70)

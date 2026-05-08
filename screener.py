@@ -601,7 +601,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         "thematic_tags": thematic_tags,
         "catalyst_headlines": catalyst_summary,
         "sentiment_tag": headline_sentiment,
-        "insider_activity": "placeholder",
+        "insider_activity": "N/A (placeholder)",
         "score": score,
         "classification": classify(score),
         "reasons": ", ".join(reasons),
