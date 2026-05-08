@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import sys
@@ -12,9 +13,11 @@ from typing import Any
 import pandas as pd
 import requests
 import yfinance as yf
+from strategy_engine import enrich_with_strategy
+from utils.sector_map import resolve_sector_info
 
-DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 20
-DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -8
+DO_NOT_CHASE_DAY_CHANGE_THRESHOLD = 15
+DO_NOT_CHASE_DISTANCE_FROM_HIGH_THRESHOLD = -7
 SPREAD_PENALTY_THRESHOLD_BPS = 30
 BASIS_POINTS_MULTIPLIER = 10000
 
@@ -299,6 +302,73 @@ def first_regular_session_open(intraday: pd.DataFrame) -> float | None:
     return as_float(regular["Open"].iloc[0])
 
 
+def market_cap_tier(market_cap: int | None) -> str:
+    if market_cap is None:
+        return "Unknown"
+    if market_cap < 2_000_000_000:
+        return "Small"
+    if market_cap < 10_000_000_000:
+        return "Mid"
+    return "Large"
+
+
+def float_risk_label(float_shares: int | None) -> tuple[str, str]:
+    if float_shares is None:
+        return "Unknown", "Unknown"
+    if float_shares < 50_000_000:
+        return "Low", "High"
+    if float_shares < 150_000_000:
+        return "Medium", "Medium"
+    return "High", "Low"
+
+
+def atr_percent(daily: pd.DataFrame) -> float | None:
+    if daily.empty or len(daily) < 15:
+        return None
+    high = daily["High"]
+    low = daily["Low"]
+    close = daily["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            (high - low),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = tr.rolling(14).mean().iloc[-1]
+    last_close = close.iloc[-1]
+    if pd.isna(atr) or not last_close:
+        return None
+    return float((atr / last_close) * 100)
+
+
+def earnings_warning(next_earnings: datetime | None) -> tuple[str | None, str]:
+    if not next_earnings:
+        return None, "None"
+    today = datetime.now().date()
+    delta = (next_earnings.date() - today).days
+    if delta < 0:
+        return next_earnings.date().isoformat(), "Passed"
+    if delta <= 3:
+        return next_earnings.date().isoformat(), "Elevated"
+    if delta <= 7:
+        return next_earnings.date().isoformat(), "Watch"
+    return next_earnings.date().isoformat(), "None"
+
+
+def sentiment_from_headline(headline: str) -> str:
+    h = headline.lower()
+    positive_terms = ("upgrade", "beat", "expansion", "contract", "partnership", "record")
+    negative_terms = ("downgrade", "miss", "investigation", "lawsuit", "cut", "recall")
+    if any(term in h for term in positive_terms):
+        return "Positive"
+    if any(term in h for term in negative_terms):
+        return "Negative"
+    return "Neutral"
+
+
 def score_stock(item: WatchlistItem) -> dict[str, Any]:
     stock = yf.Ticker(item.ticker)
     intraday = stock.history(period="1d", interval="1m", prepost=True)
@@ -348,6 +418,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     range_pos = (last - day_low) / (day_high - day_low) if day_high != day_low else 0.5
 
     monthly = stock.history(period="1mo", interval="1d")
+    daily_3m = stock.history(period="3mo", interval="1d")
     avg_volume = float(monthly["Volume"].tail(20).mean()) if not monthly.empty else None
     volume_ratio = (day_volume / avg_volume) if avg_volume and avg_volume > 0 else None
 
@@ -363,8 +434,64 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
 
     market_cap_raw = info.get("marketCap")
     market_cap = int(market_cap_raw) if market_cap_raw else None
+    cap_tier = market_cap_tier(market_cap)
+
+    float_raw = first_non_none(info.get("floatShares"), fast_info.get("shares"))
+    float_shares = int(float_raw) if float_raw else None
+    float_label, volatility_risk = float_risk_label(float_shares)
+
+    atr_pct = atr_percent(daily_3m)
+    atr_volatility = "Unknown"
+    if atr_pct is not None:
+        atr_volatility = "High" if atr_pct >= 6 else "Medium" if atr_pct >= 3 else "Low"
+
     premarket = info.get("preMarketPrice")
     after_hours = info.get("postMarketPrice")
+    premarket_volume = first_non_none(info.get("preMarketVolume"), fast_info.get("preMarketVolume"))
+    premarket_gap_pct = (
+        ((float(premarket) - previous_close) / previous_close) * 100
+        if premarket and previous_close and previous_close > 0
+        else None
+    )
+
+    earnings_raw = info.get("earningsDate")
+    next_earnings: datetime | None = None
+    if isinstance(earnings_raw, (list, tuple)) and earnings_raw:
+        candidate = earnings_raw[0]
+        if hasattr(candidate, "to_pydatetime"):
+            next_earnings = candidate.to_pydatetime()
+        elif isinstance(candidate, datetime):
+            next_earnings = candidate
+    elif isinstance(earnings_raw, datetime):
+        next_earnings = earnings_raw
+    elif isinstance(info.get("earningsTimestamp"), (int, float)):
+        next_earnings = datetime.fromtimestamp(float(info["earningsTimestamp"]))
+    earnings_date, earnings_risk = earnings_warning(next_earnings)
+
+    sector_info = resolve_sector_info(item.ticker, info)
+    thematic_tags = ", ".join(sector_info.thematic_tags) if sector_info.thematic_tags else "None"
+
+    try:
+        raw_news = stock.news or []
+    except Exception:
+        raw_news = []
+    catalysts: list[str] = []
+    sentiment_tags: list[str] = []
+    for article in raw_news[:3]:
+        title = str(article.get("title") or "").strip()
+        if not title:
+            continue
+        sentiment = sentiment_from_headline(title)
+        catalysts.append(title)
+        sentiment_tags.append(sentiment)
+    catalyst_summary = " | ".join(catalysts) if catalysts else ""
+    headline_sentiment = (
+        "Positive"
+        if sentiment_tags and sentiment_tags.count("Positive") > sentiment_tags.count("Negative")
+        else "Negative"
+        if sentiment_tags and sentiment_tags.count("Negative") > sentiment_tags.count("Positive")
+        else "Neutral"
+    )
 
     score = 0
     reasons: list[str] = []
@@ -394,6 +521,34 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     if item.sector_strength:
         score += 10
         reasons.append("sector strong")
+
+    if atr_pct is not None and atr_pct <= 4:
+        score += 5
+        reasons.append("contained ATR")
+    elif atr_pct is not None and atr_pct >= 8:
+        score -= 5
+        reasons.append("very high ATR")
+
+    if cap_tier == "Large":
+        score += 8
+        reasons.append("institutional quality")
+    elif cap_tier == "Mid":
+        score += 4
+        reasons.append("momentum growth cap")
+    elif cap_tier == "Small":
+        score -= 5
+        reasons.append("small-cap volatility")
+
+    if float_label == "Low":
+        score -= 6
+        reasons.append("low float squeeze risk")
+
+    if earnings_risk == "Elevated":
+        score -= 8
+        reasons.append("earnings proximity risk")
+    elif earnings_risk == "Watch":
+        score -= 4
+        reasons.append("earnings watch")
 
     if dist_from_high_pct < -10:
         score -= 20
@@ -431,6 +586,22 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
         "spread_pct": round(spread_pct, 2) if spread_pct is not None else None,
         "spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
         "market_cap": market_cap,
+        "market_cap_tier": cap_tier,
+        "float_shares": float_shares,
+        "float_label": float_label,
+        "volatility_risk": volatility_risk,
+        "atr_pct": round(atr_pct, 2) if atr_pct is not None else None,
+        "atr_volatility": atr_volatility,
+        "premarket_gap_pct": round(premarket_gap_pct, 2) if premarket_gap_pct is not None else None,
+        "premarket_volume": int(premarket_volume) if premarket_volume else None,
+        "earnings_date": earnings_date,
+        "earnings_warning": earnings_risk,
+        "sector": sector_info.sector,
+        "industry": sector_info.industry,
+        "thematic_tags": thematic_tags,
+        "catalyst_headlines": catalyst_summary,
+        "sentiment_tag": headline_sentiment,
+        "insider_activity": "placeholder",
         "score": score,
         "classification": classify(score),
         "reasons": ", ".join(reasons),
@@ -504,6 +675,15 @@ def _str_col(frame: pd.DataFrame, col: str) -> pd.Series:
     if col in frame.columns:
         return frame[col].astype(str)
     return pd.Series([""] * len(frame), index=frame.index)
+
+
+def format_market_cap(value: Any) -> str:
+    mcap = as_float(value)
+    if mcap is None or mcap <= 0:
+        return "n/a"
+    if mcap >= 1_000_000_000:
+        return f"{mcap / 1_000_000_000:.1f}B"
+    return f"{mcap / 1_000_000:.0f}M"
 
 
 def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> list[str]:
@@ -720,10 +900,37 @@ def format_markdown_report(df: pd.DataFrame) -> str:
         for _, row in section.iterrows():
             sources_str_row = str(row.get("sources", "")).strip()
             sources_note = f" [{sources_str_row}]" if sources_str_row else ""
+            ticker = str(row.get("ticker", ""))
+            lines.append(f"- **{ticker}**{sources_note} | score {safe_int(row.get('score', 0))} | {row.get('setup', '')}")
             lines.append(
-                f"- {row['ticker']}{sources_note}: score {safe_int(row.get('score', 0))}. "
-                f"{row.get('reasons', '')}. "
-                f"Endring {row.get('day_change_pct', 0)}% "
+                f"  - Sector: {row.get('sector', 'Unknown')} / {row.get('industry', 'Unknown')} "
+                f"({row.get('thematic_tags', 'None')})"
+            )
+            lines.append(
+                f"  - Market cap: {format_market_cap(row.get('market_cap'))} ({row.get('market_cap_tier', 'Unknown')}) | "
+                f"Float: {row.get('float_label', 'Unknown')} | Vol risk: {row.get('volatility_risk', 'Unknown')}"
+            )
+            lines.append(
+                f"  - ATR: {row.get('atr_pct', 'n/a')}% ({row.get('atr_volatility', 'Unknown')}) | "
+                f"Relative volume: {row.get('volume_ratio', 'n/a')}x | Distance from high: {row.get('distance_from_high_pct', 0)}%"
+            )
+            lines.append(
+                f"  - Premarket gap: {row.get('premarket_gap_pct', 'n/a')}% | Premarket volume: {row.get('premarket_volume', 'n/a')} | "
+                f"Earnings: {row.get('earnings_date', 'n/a')} ({row.get('earnings_warning', 'None')})"
+            )
+            if str(row.get("catalyst_headlines", "")).strip():
+                lines.append(f"  - Catalyst: {row.get('catalyst_headlines')} ({row.get('sentiment_tag', 'Neutral')})")
+            lines.append(
+                f"  - Action: entry {row.get('preferred_entry_low', 'n/a')}–{row.get('preferred_entry_high', 'n/a')} | "
+                f"breakout >{row.get('breakout_level', 'n/a')} | stop <{row.get('stop_level', 'n/a')} | "
+                f"targets {row.get('target_1', 'n/a')}/{row.get('target_2', 'n/a')}"
+            )
+            lines.append(
+                f"  - Risk: {row.get('risk', 'n/a')} | Chase risk: {row.get('chase_risk', 'n/a')} | "
+                f"Position size: {row.get('position_size_pct', 'n/a')} | Hold: {row.get('suggested_hold', 'n/a')}"
+            )
+            lines.append(
+                f"  - Momentum detail: {row.get('reasons', '')}. Endring {row.get('day_change_pct', 0)}% "
                 f"(kilde: {row.get('day_change_source', '')})."
             )
     lines.append("")
@@ -878,19 +1085,26 @@ def main() -> None:
     if "score" in df.columns:
         df = df.sort_values(by="score", ascending=False, na_position="last")
 
+    df = enrich_with_strategy(df.fillna(""))
     df["setup_bucket"] = compute_setup_bucket(df)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     csv_path = outdir / f"momentum_report_{stamp}.csv"
     md_path = outdir / f"momentum_report_{stamp}.md"
+    json_path = outdir / f"momentum_report_{stamp}.json"
 
     df.to_csv(csv_path, index=False)
     report = format_markdown_report(df.fillna(""))
     md_path.write_text(report, encoding="utf-8")
+    json_path.write_text(
+        json.dumps(df.fillna("").to_dict(orient="records"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     print(report)
     print(f"Saved CSV report: {csv_path}")
     print(f"Saved Markdown report: {md_path}")
+    print(f"Saved JSON report: {json_path}")
 
 
 if __name__ == "__main__":
