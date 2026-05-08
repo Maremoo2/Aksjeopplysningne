@@ -7,11 +7,15 @@ Lite personlig prosjekt for momentum-screening av aksjer.
 - Leser tickere fra `watchlist.csv` eller henter live fra Yahoo Finance screeners
 - Henter intradag-data via `yfinance` (pris, volum, høy/lav, pre/after-hours når tilgjengelig)
 - Regner ut momentum-score (0-100-ish) basert på enkle regler
+- Beriker hver ticker med sektor/industri/thematic tags, market-cap-tier, float-risk, ATR%, premarket gap/volume og earnings-nærhet
+- Lager enkel catalyst-hook (nyhetsheadlines + sentiment-tag) og insider-placeholder
 - Deler tickere i:
   - `A-list` (score >= 70)
   - `B-list` (score 45-70)
   - `C-list` (score < 45)
-- Lager både CSV-rapport og kort Markdown-rapport
+- Lager CSV/Markdown/JSON-rapporter
+- Genererer trade-strategier (entry/breakout/stop/targets/risk/hold)
+- Genererer market regime-rapport (SPY/QQQ/SOXX/BTC/VIX + sektorstyrke)
 - Legger til egen `Do-not-chase warning` for tickere som er kraftig opp, men langt under intradag-high
 - Inkluderer debug-felter i CSV som `day_change_source`, `spread_pct` og `spread_bps`
 - Viser hvilke Yahoo-lister hver aksje dukket opp i (f.eks. `[Top Gainers, Most Active]`)
@@ -35,12 +39,23 @@ python screener.py --source yahoo-momentum --limit 25 --outdir reports
 
 # Enkeltscreener (f.eks. Top Gainers)
 python screener.py --source yahoo-gainers --limit 25 --outdir reports
+
+# Strategy fra eksisterende momentum-CSV
+python strategy_engine.py --input reports/momentum_report_YYYYMMDD_HHMM.csv --outdir reports
+
+# Market regime
+python market_regime.py --outdir reports
 ```
 
 Eksempel på output-filer:
 
 - `momentum_report_YYYYMMDD_HHMM.csv`
 - `momentum_report_YYYYMMDD_HHMM.md`
+- `momentum_report_YYYYMMDD_HHMM.json`
+- `strategy_report_YYYYMMDD_HHMM.{csv,md,json}`
+- `market_regime_YYYYMMDD_HHMM.{md,json}`
+
+A sample report with the new fields is available in `samples/sample_momentum_report.md`.
 
 ## CLI-argumenter
 
@@ -107,4 +122,3 @@ ticker,category,news,sector_strength
 FTNT,cyber,false,true
 DDOG,cloud,true,true
 ```
-

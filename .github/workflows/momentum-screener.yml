@@ -30,11 +30,21 @@ jobs:
         run: |
           mkdir -p reports/watchlist
           python screener.py --source watchlist --input watchlist.csv --outdir reports/watchlist
+          latest_watchlist_csv=$(ls -t reports/watchlist/momentum_report_*.csv | head -n 1)
+          python strategy_engine.py --input "$latest_watchlist_csv" --outdir reports/watchlist
 
       - name: Run Yahoo-all screener
         run: |
           mkdir -p reports/yahoo-all
           python screener.py --source yahoo-all --limit 25 --outdir reports/yahoo-all
+          latest_yahoo_csv=$(ls -t reports/yahoo-all/momentum_report_*.csv | head -n 1)
+          python strategy_engine.py --input "$latest_yahoo_csv" --outdir reports/yahoo-all
+        continue-on-error: true
+
+      - name: Run market regime analysis
+        run: |
+          mkdir -p reports/regime
+          python market_regime.py --outdir reports/regime
         continue-on-error: true
 
       - name: Upload reports
