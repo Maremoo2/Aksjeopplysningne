@@ -727,7 +727,7 @@ def _display_number(
         return default
     numeric = float(numeric)
     if decimals is None:
-        text = str(int(numeric)) if numeric.is_integer() else str(numeric)
+        text = str(int(numeric)) if numeric % 1 == 0 else str(numeric)
     else:
         text = f"{numeric:.{decimals}f}"
     return f"{text}{suffix}"
@@ -1139,7 +1139,7 @@ def format_markdown_report(df: pd.DataFrame) -> str:
                 f"Position size: {_display_position_size(row.get('position_size_pct'))} | Hold: {row.get('suggested_hold', 'n/a')}"
             )
             lines.append(
-                f"  - Momentum detail: {row.get('reasons', '')}. Endring {row.get('day_change_pct', 0)}% "
+                f"  - Momentum detail: {row.get('reasons', '')}. Change {row.get('day_change_pct', 0)}% "
                 f"(kilde: {row.get('day_change_source', '')})."
             )
     lines.append("")

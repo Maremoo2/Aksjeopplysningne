@@ -90,7 +90,12 @@ def _risk_label(
     if earnings_warning == "Elevated":
         risk_score += 2
 
-    risk = "High" if risk_score >= 5 else "Medium" if risk_score >= 3 else "Low"
+    if risk_score >= 5:
+        risk = "High"
+    elif risk_score >= 3:
+        risk = "Medium"
+    else:
+        risk = "Low"
     if risk == "Low" and (float_label == "Low" or day_change > 15 or atr_pct > 5):
         return "Medium"
     return risk
