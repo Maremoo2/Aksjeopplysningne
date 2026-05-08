@@ -17,6 +17,10 @@ STOP_ATR_MULTIPLIER = 1.2
 INVALIDATION_ATR_MULTIPLIER = 1.5
 TARGET1_ATR_MULTIPLIER = 1.5
 TARGET2_ATR_MULTIPLIER = 2.5
+EXTENDED_DAY_CHANGE_THRESHOLD = 20
+HARD_EXTENDED_DAY_CHANGE_THRESHOLD = 25
+STRONG_CONTINUATION_DISTANCE_THRESHOLD = -1.5
+STRONG_CONTINUATION_VOLUME_THRESHOLD = 3.0
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -28,13 +32,32 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _is_strong_continuation(
+    day_change: float,
+    distance_from_high: float,
+    volume_ratio: float,
+    above_vwap: bool,
+) -> bool:
+    return (
+        above_vwap
+        and day_change <= HARD_EXTENDED_DAY_CHANGE_THRESHOLD
+        and distance_from_high >= STRONG_CONTINUATION_DISTANCE_THRESHOLD
+        and volume_ratio >= STRONG_CONTINUATION_VOLUME_THRESHOLD
+    )
+
+
 def classify_setup(row: dict[str, Any]) -> str:
     day_change = _to_float(row.get("day_change_pct"))
     distance_from_high = _to_float(row.get("distance_from_high_pct"))
     volume_ratio = _to_float(row.get("volume_ratio"))
     atr_pct = _to_float(row.get("atr_pct"))
     above_vwap = _to_float(row.get("last")) > _to_float(row.get("vwap"))
+    strong_continuation = _is_strong_continuation(day_change, distance_from_high, volume_ratio, above_vwap)
 
+    if day_change > HARD_EXTENDED_DAY_CHANGE_THRESHOLD:
+        return "extended/parabolic"
+    if day_change > EXTENDED_DAY_CHANGE_THRESHOLD and not strong_continuation:
+        return "extended/parabolic"
     if day_change > 15 and distance_from_high < -7:
         return "extended/parabolic"
     if distance_from_high > -2 and volume_ratio >= 2:
@@ -48,7 +71,13 @@ def classify_setup(row: dict[str, Any]) -> str:
     return "pullback"
 
 
-def _risk_label(chase_risk: str, atr_pct: float, earnings_warning: str) -> str:
+def _risk_label(
+    chase_risk: str,
+    atr_pct: float,
+    earnings_warning: str,
+    day_change: float,
+    float_label: str,
+) -> str:
     risk_score = 1
     if chase_risk == "High":
         risk_score += 2
@@ -61,17 +90,34 @@ def _risk_label(chase_risk: str, atr_pct: float, earnings_warning: str) -> str:
     if earnings_warning == "Elevated":
         risk_score += 2
 
-    if risk_score >= 5:
-        return "High"
-    if risk_score >= 3:
+    risk = "High" if risk_score >= 5 else "Medium" if risk_score >= 3 else "Low"
+    if risk == "Low" and (float_label == "Low" or day_change > 15 or atr_pct > 5):
         return "Medium"
-    return "Low"
+    return risk
+
+
+def _position_size_pct(
+    risk: str,
+    chase_risk: str,
+    day_change: float,
+    atr_pct: float,
+    float_label: str,
+) -> float:
+    if risk == "Low":
+        return 0.05
+    if risk == "Medium":
+        return 0.03
+    if chase_risk == "High" or day_change > HARD_EXTENDED_DAY_CHANGE_THRESHOLD or atr_pct >= 7 or float_label == "Low":
+        return 0.01
+    return 0.02
 
 
 def generate_trade_plan(row: dict[str, Any]) -> dict[str, Any]:
     setup = classify_setup(row)
     last = _to_float(row.get("last"))
     atr_pct = _to_float(row.get("atr_pct"))
+    day_change = _to_float(row.get("day_change_pct"))
+    float_label = str(row.get("float_label", ""))
     atr_move = (
         last * (atr_pct / 100.0)
         if last > 0 and atr_pct > 0
@@ -93,8 +139,8 @@ def generate_trade_plan(row: dict[str, Any]) -> dict[str, Any]:
     elif near_high and _to_float(row.get("day_change_pct")) > 6:
         chase_risk = "Medium"
 
-    risk = _risk_label(chase_risk, atr_pct, str(row.get("earnings_warning", "")))
-    position_size_pct = 0.03 if risk == "High" else 0.05 if risk == "Medium" else 0.08
+    risk = _risk_label(chase_risk, atr_pct, str(row.get("earnings_warning", "")), day_change, float_label)
+    position_size_pct = _position_size_pct(risk, chase_risk, day_change, atr_pct, float_label)
     hold_window = "1–2 days" if setup in {"breakout", "extended/parabolic"} else "2–5 days"
 
     return {
