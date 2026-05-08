@@ -360,7 +360,7 @@ def earnings_warning(next_earnings: datetime | None) -> tuple[str | None, str]:
 
 def sentiment_from_headline(headline: str) -> str:
     h = headline.lower()
-    positive_terms = ("upgrade", "beat", "expansion", "contract", "partnership", "record")
+    positive_terms = ("upgrade", "beat", "expansion", "contract win", "new contract", "partnership", "record")
     negative_terms = ("downgrade", "miss", "investigation", "lawsuit", "cut", "recall")
     if any(term in h for term in positive_terms):
         return "Positive"

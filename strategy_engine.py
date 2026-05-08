@@ -8,6 +8,16 @@ from typing import Any
 
 import pandas as pd
 
+DEFAULT_ATR_PCT_FALLBACK = 0.03
+DEFAULT_PRICE_FLOOR_FALLBACK = 0.01
+ENTRY_LOW_ATR_MULTIPLIER = 0.7
+ENTRY_HIGH_ATR_MULTIPLIER = 0.3
+BREAKOUT_ATR_MULTIPLIER = 0.5
+STOP_ATR_MULTIPLIER = 1.2
+INVALIDATION_ATR_MULTIPLIER = 1.5
+TARGET1_ATR_MULTIPLIER = 1.5
+TARGET2_ATR_MULTIPLIER = 2.5
+
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -62,16 +72,20 @@ def generate_trade_plan(row: dict[str, Any]) -> dict[str, Any]:
     setup = classify_setup(row)
     last = _to_float(row.get("last"))
     atr_pct = _to_float(row.get("atr_pct"))
-    atr_move = last * (atr_pct / 100.0) if last > 0 and atr_pct > 0 else max(last * 0.03, 0.01)
+    atr_move = (
+        last * (atr_pct / 100.0)
+        if last > 0 and atr_pct > 0
+        else max(last * DEFAULT_ATR_PCT_FALLBACK, DEFAULT_PRICE_FLOOR_FALLBACK)
+    )
     near_high = _to_float(row.get("distance_from_high_pct")) > -2
 
-    preferred_entry_low = round(max(last - atr_move * 0.7, 0), 2)
-    preferred_entry_high = round(max(last - atr_move * 0.3, 0), 2)
-    breakout_level = round(last + atr_move * 0.5, 2)
-    stop_level = round(max(last - atr_move * 1.2, 0), 2)
-    target_1 = round(last + atr_move * 1.5, 2)
-    target_2 = round(last + atr_move * 2.5, 2)
-    invalidation = round(max(last - atr_move * 1.5, 0), 2)
+    preferred_entry_low = round(max(last - atr_move * ENTRY_LOW_ATR_MULTIPLIER, 0), 2)
+    preferred_entry_high = round(max(last - atr_move * ENTRY_HIGH_ATR_MULTIPLIER, 0), 2)
+    breakout_level = round(last + atr_move * BREAKOUT_ATR_MULTIPLIER, 2)
+    stop_level = round(max(last - atr_move * STOP_ATR_MULTIPLIER, 0), 2)
+    target_1 = round(last + atr_move * TARGET1_ATR_MULTIPLIER, 2)
+    target_2 = round(last + atr_move * TARGET2_ATR_MULTIPLIER, 2)
+    invalidation = round(max(last - atr_move * INVALIDATION_ATR_MULTIPLIER, 0), 2)
 
     chase_risk = "Low"
     if setup == "extended/parabolic":
