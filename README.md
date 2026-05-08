@@ -55,7 +55,7 @@ Eksempel på output-filer:
 - `strategy_report_YYYYMMDD_HHMM.{csv,md,json}`
 - `market_regime_YYYYMMDD_HHMM.{md,json}`
 
-Eksempelrapport med de nye feltene finnes i `samples/sample_momentum_report.md`.
+A sample report with the new fields is available in `samples/sample_momentum_report.md`.
 
 ## CLI-argumenter
 
