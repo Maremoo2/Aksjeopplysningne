@@ -943,6 +943,7 @@ def _priority_score(
     chase_risk = str(row.get("chase_risk", ""))
     categories = _row_exposure_categories(row)
     overlap = tuple(sorted(category for category in categories if category in concentrated_categories))
+    # Overlap is retained as warning metadata for the brief, not as a ranking penalty.
     _, sector_strength = _primary_sector_strength(categories, regime_report)
 
     score = {
