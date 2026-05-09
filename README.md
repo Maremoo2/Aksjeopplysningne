@@ -17,6 +17,9 @@ Lite personlig prosjekt for momentum-screening av aksjer.
 - Genererer trade-strategier (entry/breakout/stop/targets/risk/hold)
 - Genererer market regime-rapport (SPY/QQQ/SOXX/BTC/VIX + sektorstyrke)
 - Genererer kort shareable `trading_brief_YYYYMMDD_HHMM.md` i `reports/shareable/`
+- Legger til intraday-priority, trigger alerts og portefølje-overlap i trading brief
+- Leser `config/portfolio.yaml` for eksponeringsvarsler
+- Lar deg loggføre trades i `data/trade_journal.csv` og oppsummere læring med `performance_review.py`
 - Legger til egen `Do-not-chase warning` for tickere som er kraftig opp, men langt under intradag-high
 - Inkluderer debug-felter i CSV som `day_change_source`, `spread_pct` og `spread_bps`
 - Viser hvilke Yahoo-lister hver aksje dukket opp i (f.eks. `[Top Gainers, Most Active]`)
@@ -46,6 +49,9 @@ python strategy_engine.py --input reports/momentum_report_YYYYMMDD_HHMM.csv --ou
 
 # Market regime
 python market_regime.py --outdir reports
+
+# Oppsummer trade journal
+python performance_review.py
 ```
 
 Eksempel på output-filer:
@@ -56,6 +62,8 @@ Eksempel på output-filer:
 - `strategy_report_YYYYMMDD_HHMM.{csv,md,json}`
 - `market_regime_YYYYMMDD_HHMM.{md,json}`
 - `shareable/trading_brief_YYYYMMDD_HHMM.md`
+- `config/portfolio.yaml`
+- `data/trade_journal.csv`
 
 A sample report with the new fields is available in `samples/sample_momentum_report.md`.
 
@@ -124,3 +132,9 @@ ticker,category,news,sector_strength
 FTNT,cyber,false,true
 DDOG,cloud,true,true
 ```
+
+## Portfolio og journal
+
+- `config/portfolio.yaml` brukes til å flagge sektor-/tema-overlapp før nye trades tas.
+- `data/trade_journal.csv` er en enkel journal for dato, setup, entry/exit, størrelse, stop, target, resultat og om planen ble fulgt.
+- `python performance_review.py` oppsummerer win rate, gjennomsnittlig gevinst/tap, beste/verste setup og tema, holdetid (når tilgjengelig) og hvor ofte planen ble fulgt.
