@@ -1001,7 +1001,6 @@ def _priority_score(
     elif earnings_warning == "Watch":
         score -= 5
 
-    score -= len(overlap) * 6
     return (max(score, 0), categories, overlap)
 
 

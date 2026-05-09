@@ -212,6 +212,46 @@ class ScreenerTests(unittest.TestCase):
         self.assertIn("Portfolio warning", brief)
         self.assertIn("AI / Datacenter exposure is already concentrated", brief)
 
+    def test_portfolio_overlap_only_adds_warning_metadata(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "NVDA",
+                    "score": 84,
+                    "classification": "A-list",
+                    "setup_bucket": "A1",
+                    "setup": "breakout",
+                    "last": 100.0,
+                    "vwap": 99.0,
+                    "preferred_entry_low": 99.0,
+                    "preferred_entry_high": 100.0,
+                    "volume_ratio": 2.4,
+                    "distance_from_high_pct": -1.2,
+                    "day_change_pct": 5.1,
+                    "spread_bps": 10.0,
+                    "earnings_warning": "Watch",
+                    "chase_risk": "Low",
+                    "sector": "Technology",
+                    "industry": "Semiconductors",
+                    "thematic_tags": "Semiconductor, AI Compute",
+                }
+            ]
+        )
+        regime_report = {
+            "market_regime": "Risk-on",
+            "momentum_odds": "Favorable",
+            "sector_strength": {"SOXX": "Strong", "AI Software": "Strong", "Crypto Miners": "Neutral"},
+        }
+
+        without_overlap = screener.enrich_with_intraday_assistant(frame, regime_report, [])
+        with_overlap = screener.enrich_with_intraday_assistant(
+            frame, regime_report, ["IREN", "APLD", "CORE", "NVDA"]
+        )
+
+        self.assertEqual(without_overlap.loc[0, "priority_score"], with_overlap.loc[0, "priority_score"])
+        self.assertEqual(without_overlap.loc[0, "priority_label"], with_overlap.loc[0, "priority_label"])
+        self.assertEqual(with_overlap.loc[0, "portfolio_overlap"], "AI / Datacenter")
+
 
 if __name__ == "__main__":
     unittest.main()
