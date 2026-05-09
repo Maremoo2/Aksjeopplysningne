@@ -15,6 +15,7 @@ import requests
 import yfinance as yf
 from market_regime import build_regime_report
 from strategy_engine import enrich_with_strategy
+from utils.exposure import build_exposure_summary, exposure_categories_for_security
 from utils.sector_map import resolve_sector_info
 
 # Risk guardrail tuned for momentum names: flags fast moves that are already
@@ -86,6 +87,10 @@ EXCLUDED_QUOTE_TYPES = {"MUTUALFUND", "ETF"}
 DEFAULT_MIN_PRICE = 2.0
 DEFAULT_MIN_MARKET_CAP = 500_000_000.0
 DEFAULT_MIN_VOLUME = 1_000_000.0
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_PORTFOLIO_PATH = REPO_ROOT / "config" / "portfolio.yaml"
+DEFAULT_TRADE_JOURNAL_PATH = REPO_ROOT / "data" / "trade_journal.csv"
+PORTFOLIO_CONCENTRATION_WARNING_THRESHOLD = 2
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +145,32 @@ def load_watchlist(path: Path) -> list[WatchlistItem]:
             )
         )
     return items
+
+
+def load_portfolio_config(path: Path = DEFAULT_PORTFOLIO_PATH) -> list[str]:
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+
+    holdings: list[str] = []
+    in_holdings = False
+    for raw_line in raw_text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "holdings:":
+            in_holdings = True
+            continue
+        if in_holdings and stripped.startswith("- "):
+            holding = stripped[2:].strip().strip("'\"")
+            if holding:
+                holdings.append(holding)
+            continue
+        if in_holdings and not raw_line.startswith((" ", "\t")):
+            in_holdings = False
+
+    return holdings
 
 
 def fetch_yahoo_screener(source_key: str, limit: int) -> list[dict[str, Any]]:
@@ -790,6 +821,250 @@ def format_market_cap(value: Any) -> str:
     return f"{mcap / 1_000_000:.0f}M"
 
 
+def _row_exposure_categories(row: dict[str, Any] | pd.Series) -> tuple[str, ...]:
+    return exposure_categories_for_security(
+        str(row.get("ticker", "")),
+        sector=str(row.get("sector", "")),
+        industry=str(row.get("industry", "")),
+        thematic_tags=str(row.get("thematic_tags", "")),
+        category=str(row.get("category", "")),
+    )
+
+
+def _primary_sector_strength(categories: tuple[str, ...], regime_report: dict[str, Any]) -> tuple[str, str]:
+    sector_strength = regime_report.get("sector_strength", {})
+    mapping = (
+        ("Semiconductors", "SOXX"),
+        ("Crypto miners", "Crypto Miners"),
+        ("Cybersecurity", "Cyber"),
+        ("AI / Datacenter", "AI Software"),
+    )
+    for category, regime_key in mapping:
+        if category in categories and regime_key in sector_strength:
+            return category, str(sector_strength.get(regime_key, "Unknown"))
+    return ("General", "Unknown")
+
+
+def _market_proxy(categories: tuple[str, ...]) -> str:
+    if "Crypto miners" in categories:
+        return "BTC and crypto miners"
+    if "Semiconductors" in categories:
+        return "QQQ and SOXX"
+    if "Cybersecurity" in categories:
+        return "QQQ and cybersecurity peers"
+    if "Space / Aerospace" in categories:
+        return "IWM and space peers"
+    return "QQQ"
+
+
+def _priority_label(row: dict[str, Any] | pd.Series, priority_score: int) -> str:
+    bucket = str(row.get("setup_bucket", row.get("classification", "")))
+    chase_risk = str(row.get("chase_risk", ""))
+    setup = str(row.get("setup", "")).lower()
+    if bucket == "C-list" or chase_risk == "High":
+        return "Do not chase"
+    if bucket == "A2":
+        return "Strong but extended"
+    if bucket == "A1" and priority_score >= 55:
+        return "Follow actively"
+    if setup == "continuation":
+        return "Watch for VWAP hold"
+    if setup == "breakout":
+        return "Watch for breakout"
+    if setup == "pullback":
+        return "Pullback only"
+    return "Secondary watch"
+
+
+def _priority_action_hint(row: dict[str, Any] | pd.Series) -> str:
+    setup = str(row.get("setup", "")).lower()
+    if str(row.get("priority_label", "")) == "Do not chase":
+        return "wait for a full reset"
+    if setup == "breakout":
+        return "wait for VWAP hold / breakout"
+    if setup == "continuation":
+        return "watch for VWAP hold"
+    if setup == "pullback":
+        return "pullback only"
+    return "only act on clean confirmation"
+
+
+def _build_trigger_rules(row: dict[str, Any] | pd.Series, regime_report: dict[str, Any]) -> dict[str, str]:
+    categories = _row_exposure_categories(row)
+    proxy = _market_proxy(categories)
+    _, sector_strength = _primary_sector_strength(categories, regime_report)
+    entry_low = _display_number(row.get("preferred_entry_low"), decimals=2)
+    entry_high = _display_number(row.get("preferred_entry_high"), decimals=2)
+    breakout = _display_number(row.get("breakout_level"), decimals=2)
+    invalidation = _display_number(row.get("invalidation_level"), decimals=2)
+    earnings_warning = str(row.get("earnings_warning", ""))
+    spread_bps = as_float(row.get("spread_bps"))
+
+    buy_bits = ["price holds above VWAP"]
+    if entry_low != "n/a" and entry_high != "n/a":
+        buy_bits.append(f"stays constructive around {entry_low}–{entry_high}")
+    if sector_strength == "Strong":
+        buy_bits.append("sector leadership remains strong")
+    else:
+        buy_bits.append(f"{proxy} stays supportive")
+
+    avoid_bits = ["loses VWAP"]
+    if entry_low != "n/a" and entry_high != "n/a":
+        avoid_bits.append(f"falls below the {entry_low}–{entry_high} entry zone")
+    avoid_bits.append(f"{proxy} reverses lower")
+    if spread_bps is not None and spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
+        avoid_bits.append("spread stays too wide")
+    if earnings_warning in {"Watch", "Elevated"}:
+        avoid_bits.append(f"earnings risk is {earnings_warning.lower()}")
+
+    return {
+        "buy_trigger": " and ".join(buy_bits),
+        "breakout_trigger": f"breaks above {breakout} with expanding volume and holds above VWAP",
+        "pullback_trigger": f"pulls back into {entry_low}–{entry_high} and reclaims VWAP",
+        "invalidation_trigger": f"loses VWAP or breaks below {invalidation}",
+        "avoid_trigger": " or ".join(avoid_bits),
+    }
+
+
+def _priority_score(
+    row: dict[str, Any] | pd.Series,
+    regime_report: dict[str, Any],
+    concentrated_categories: set[str],
+) -> tuple[int, tuple[str, ...], tuple[str, ...]]:
+    bucket = str(row.get("setup_bucket", row.get("classification", "")))
+    last = as_float(row.get("last"))
+    vwap = as_float(row.get("vwap"))
+    entry_low = as_float(row.get("preferred_entry_low"))
+    entry_high = as_float(row.get("preferred_entry_high"))
+    volume_ratio = as_float(row.get("volume_ratio")) or 0.0
+    distance_from_high = as_float(row.get("distance_from_high_pct")) or 0.0
+    spread_bps = as_float(row.get("spread_bps"))
+    earnings_warning = str(row.get("earnings_warning", ""))
+    chase_risk = str(row.get("chase_risk", ""))
+    categories = _row_exposure_categories(row)
+    overlap = tuple(sorted(category for category in categories if category in concentrated_categories))
+    # Overlap is retained as warning metadata for the brief, not as a ranking penalty.
+    _, sector_strength = _primary_sector_strength(categories, regime_report)
+
+    score = {
+        "A1": 30,
+        "A2": 22,
+        "B-list": 14,
+        "C-list": 0,
+    }.get(bucket, 8)
+
+    if last is not None and vwap is not None and last > vwap:
+        score += 10
+    if last is not None and entry_low is not None and entry_high is not None:
+        if entry_low <= last <= entry_high:
+            score += 12
+        elif entry_high > 0 and abs(last - entry_high) / entry_high <= 0.02:
+            score += 6
+    score += min(int(volume_ratio * 4), 15)
+
+    if distance_from_high >= -2:
+        score += 10
+    elif distance_from_high >= -5:
+        score += 5
+    elif distance_from_high <= -10:
+        score -= 8
+
+    if sector_strength == "Strong":
+        score += 8
+    elif sector_strength == "Weak":
+        score -= 8
+
+    regime = str(regime_report.get("market_regime", "Unknown"))
+    if regime == "Risk-on":
+        score += 8
+    elif regime == "Neutral":
+        score += 2
+    elif regime in {"Risk-off", "Mean-reversion environment"}:
+        score -= 8
+    elif regime == "Panic":
+        score -= 12
+
+    if chase_risk == "High":
+        score -= 12
+    elif chase_risk == "Medium":
+        score -= 4
+    else:
+        score += 4
+
+    if spread_bps is not None:
+        if spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
+            score -= 8
+        elif spread_bps > 15:
+            score -= 4
+
+    if earnings_warning == "Elevated":
+        score -= 10
+    elif earnings_warning == "Watch":
+        score -= 5
+
+    return (max(score, 0), categories, overlap)
+
+
+def build_portfolio_warnings(df: pd.DataFrame, portfolio_holdings: list[str]) -> list[str]:
+    if not portfolio_holdings:
+        return []
+
+    holdings_by_category = build_exposure_summary(portfolio_holdings)
+    warnings: list[str] = []
+    for category, names in sorted(
+        holdings_by_category.items(),
+        key=lambda item: (-len(item[1]), item[0]),
+    ):
+        if len(names) < PORTFOLIO_CONCENTRATION_WARNING_THRESHOLD:
+            continue
+        overlap_names: list[str] = []
+        if "exposure_categories" in df.columns:
+            overlap_mask = _str_col(df, "exposure_categories").str.contains(category, regex=False, na=False)
+            overlap_names = sorted(df.loc[overlap_mask, "ticker"].astype(str).drop_duplicates().tolist())
+        overlap_note = f" Current overlap: {', '.join(overlap_names)}." if overlap_names else ""
+        warnings.append(
+            f"{category} exposure is already concentrated through {', '.join(names)}."
+            f" Avoid adding another correlated {category.lower()} name unless the setup is exceptional."
+            f"{overlap_note}"
+        )
+    return warnings
+
+
+def enrich_with_intraday_assistant(
+    df: pd.DataFrame,
+    regime_report: dict[str, Any],
+    portfolio_holdings: list[str],
+) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    holdings_by_category = build_exposure_summary(portfolio_holdings)
+    concentrated_categories = {
+        category for category, names in holdings_by_category.items() if len(names) >= PORTFOLIO_CONCENTRATION_WARNING_THRESHOLD
+    }
+
+    extras: list[dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        priority_score, categories, overlap = _priority_score(row, regime_report, concentrated_categories)
+        trigger_rules = _build_trigger_rules(row, regime_report)
+        extras.append(
+            {
+                "priority_score": priority_score,
+                "priority_label": _priority_label(row, priority_score),
+                "exposure_categories": ", ".join(categories) if categories else "None",
+                "portfolio_overlap": ", ".join(overlap) if overlap else "",
+                **trigger_rules,
+            }
+        )
+
+    extra_df = pd.DataFrame(extras)
+    existing = [column for column in extra_df.columns if column in df.columns]
+    if existing:
+        df = df.drop(columns=existing)
+    enriched = pd.concat([df.reset_index(drop=True), extra_df], axis=1)
+    return enriched.sort_values(by=["priority_score", "score"], ascending=[False, False], na_position="last")
+
+
 def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> list[str]:
     """Build the ## Decision summary section lines."""
     lines: list[str] = ["## Decision summary", ""]
@@ -926,9 +1201,14 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     return lines
 
 
-def format_shareable_report(df: pd.DataFrame, regime_report: dict[str, Any]) -> str:
+def format_shareable_report(
+    df: pd.DataFrame,
+    regime_report: dict[str, Any],
+    portfolio_holdings: list[str] | None = None,
+) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [f"# Trading Brief ({now})", ""]
+    portfolio_holdings = portfolio_holdings or []
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
     missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}
@@ -964,85 +1244,57 @@ def format_shareable_report(df: pd.DataFrame, regime_report: dict[str, Any]) -> 
             f"- Momentum odds: {regime_report.get('momentum_odds', 'Unknown')}",
             f"- Strong sectors: {', '.join(strong_sectors) if strong_sectors else 'None'}",
             "",
-            "## Top actionable names",
+            "## Intraday priority",
         ]
     )
 
-    actionable_mask = ((df["setup_bucket"] == "A1") | (df["setup_bucket"] == "B-list")) & ~has_error & ~in_do_not_chase
-    actionable = _rank_candidates(df[actionable_mask]).head(5)
-    if actionable.empty:
-        fallback = df[(df["setup_bucket"] == "A2") & ~has_error]
-        actionable = _rank_candidates(fallback).head(5) if not fallback.empty else fallback
+    ranked = df[~has_error].copy()
+    if "priority_score" in ranked.columns:
+        ranked = ranked.sort_values(by=["priority_score", "score"], ascending=[False, False], na_position="last")
+    else:
+        ranked = _rank_candidates(ranked)
 
-    if actionable.empty:
+    priority = ranked.head(5)
+    if priority.empty:
         lines.append("- (none)")
     else:
-        for _, row in actionable.iterrows():
+        for idx, (_, row) in enumerate(priority.iterrows(), start=1):
+            label = _display_text(row.get("priority_label"), "Secondary watch")
+            lines.append(f"{idx}. {row.get('ticker', '')} — {label} — {_priority_action_hint(row)}")
+    lines.append("")
+
+    lines.append("## Trigger alerts")
+    if priority.empty:
+        lines.append("- (none)")
+    else:
+        for _, row in priority.iterrows():
             lines.extend(
                 [
                     f"### {row.get('ticker', '')}",
-                    f"- Classification: {_display_text(row.get('setup_bucket'), 'n/a')}",
-                    f"- Setup: {_display_text(row.get('setup'), 'n/a')}",
-                    f"- Day change: {_display_signed_pct(row.get('day_change_pct'))}",
-                    f"- Relative volume: {_display_number(row.get('volume_ratio'), suffix='x', decimals=2)}",
-                    f"- Distance from high: {_display_number(row.get('distance_from_high_pct'), suffix='%', decimals=2)}",
-                    f"- Sector/theme: {_display_text(row.get('sector'), 'Unknown')} / {_display_text(row.get('industry'), 'Unknown')} ({_display_text(row.get('thematic_tags'), 'None')})",
-                    f"- Entry: {_display_number(row.get('preferred_entry_low'), decimals=2)}–{_display_number(row.get('preferred_entry_high'), decimals=2)}",
-                    f"- Breakout: >{_display_number(row.get('breakout_level'), decimals=2)}",
-                    f"- Stop: <{_display_number(row.get('stop_level'), decimals=2)}",
-                    f"- Targets: {_display_number(row.get('target_1'), decimals=2)} / {_display_number(row.get('target_2'), decimals=2)}",
-                    f"- Risk: {_display_text(row.get('risk'), 'n/a')}",
-                    f"- Chase risk: {_display_text(row.get('chase_risk'), 'n/a')}",
-                    f"- Suggested size: {_display_position_size(row.get('position_size_pct'))}",
-                    f"- Hold window: {_display_text(row.get('suggested_hold'), 'n/a')}",
+                    f"- Buy trigger: {_display_text(row.get('buy_trigger'), 'n/a')}",
+                    f"- Breakout trigger: {_display_text(row.get('breakout_trigger'), 'n/a')}",
+                    f"- Pullback trigger: {_display_text(row.get('pullback_trigger'), 'n/a')}",
+                    f"- Invalidation: {_display_text(row.get('invalidation_trigger'), 'n/a')}",
+                    f"- Avoid trigger: {_display_text(row.get('avoid_trigger'), 'n/a')}",
                     "",
                 ]
             )
 
-    lines.append("## Do-not-chase list")
-    extended_mask = (df["setup_bucket"] == "A2") | in_do_not_chase | (_str_col(df, "chase_risk") == "High")
-    dnc = df[extended_mask & ~has_error]
-    if dnc.empty:
-        lines.append("- (none)")
+    lines.append("## Portfolio warning")
+    warnings = build_portfolio_warnings(priority, portfolio_holdings)
+    if warnings:
+        for warning in warnings:
+            lines.append(f"- {warning}")
     else:
-        for _, row in dnc.drop_duplicates(subset=["ticker"]).iterrows():
-            lines.append(
-                f"- {row.get('ticker', '')}: {_display_text(row.get('setup_bucket'), 'n/a')} | "
-                f"{_display_signed_pct(row.get('day_change_pct'))} | "
-                f"distance from high {_display_number(row.get('distance_from_high_pct'), suffix='%', decimals=2)} | "
-                f"chase risk {_display_text(row.get('chase_risk'), 'n/a')}"
-            )
+        lines.append("- No concentrated overlap detected.")
     lines.append("")
 
-    lines.append("## Ignore / weak list")
-    weak_mask = ((df["setup_bucket"] == "C-list") | (_str_col(df, "risk") == "High")) & ~has_error
-    weak = df[weak_mask].copy()
-    if weak.empty:
-        lines.append("- (none)")
-    else:
-        reasons_col = _str_col(weak, "reasons")
-        weak["_red"] = (_numeric_col(weak, "day_change_pct") < 0).astype(int)
-        weak["_far"] = (_numeric_col(weak, "distance_from_high_pct") < -10).astype(int)
-        weak["_spread"] = (_numeric_col(weak, "spread_bps") > SPREAD_PENALTY_THRESHOLD_BPS).astype(int)
-        weak["_ll"] = reasons_col.str.contains("lower lows", case=False, na=False).astype(int)
-        weak["_score"] = _numeric_col(weak, "score")
-        weak = weak.sort_values(
-            by=["_red", "_far", "_spread", "_ll", "_score"],
-            ascending=[False, False, False, False, True],
-        )
-        for _, row in weak.head(5).iterrows():
-            lines.append(
-                f"- {row.get('ticker', '')}: {_display_signed_pct(row.get('day_change_pct'))} | "
-                f"distance from high {_display_number(row.get('distance_from_high_pct'), suffix='%', decimals=2)} | "
-                f"spread {_display_number(row.get('spread_bps'), suffix=' bps', decimals=0)} | "
-                f"{_display_text(row.get('reasons'), 'weak momentum')}"
-            )
-    lines.append("")
-
-    lines.append("## Paste-to-ChatGPT")
-    lines.append("```")
-    lines.append(_CHATGPT_PROMPT)
-    lines.append("```")
+    lines.append("## Journal reminder")
+    lines.append(
+        "- If a trade is taken, log ticker, entry, stop, target, result, reason, and whether the plan was followed "
+        "in data/trade_journal.csv."
+    )
+    lines.append("- Review the journal with `python performance_review.py`.")
     lines.append("")
 
     return "\n".join(lines).strip() + "\n"
@@ -1296,6 +1548,12 @@ def main() -> None:
 
     df = enrich_with_strategy(df.fillna(""))
     df["setup_bucket"] = compute_setup_bucket(df)
+    portfolio_holdings = load_portfolio_config()
+    try:
+        regime_report = build_regime_report()
+    except Exception:
+        regime_report = _build_market_regime_fallback()
+    df = enrich_with_intraday_assistant(df, regime_report, portfolio_holdings)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     csv_path = outdir / f"momentum_report_{stamp}.csv"
@@ -1312,11 +1570,7 @@ def main() -> None:
     shareable_dir = outdir / "shareable"
     shareable_dir.mkdir(parents=True, exist_ok=True)
     brief_path = shareable_dir / f"trading_brief_{stamp}.md"
-    try:
-        regime_report = build_regime_report()
-    except Exception:
-        regime_report = _build_market_regime_fallback()
-    brief_path.write_text(format_shareable_report(df, regime_report), encoding="utf-8")
+    brief_path.write_text(format_shareable_report(df, regime_report, portfolio_holdings), encoding="utf-8")
 
     print(report)
     print(f"Saved CSV report: {csv_path}")

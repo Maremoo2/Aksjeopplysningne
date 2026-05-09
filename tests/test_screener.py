@@ -160,8 +160,97 @@ class ScreenerTests(unittest.TestCase):
             brief = brief_path.read_text(encoding="utf-8")
             self.assertIn("Market regime: Risk-on", brief)
             self.assertIn("Strong sectors: Semiconductors, AI Software, Crypto Miners", brief)
-            self.assertIn("## Top actionable names", brief)
-            self.assertIn("## Paste-to-ChatGPT", brief)
+            self.assertIn("## Intraday priority", brief)
+            self.assertIn("## Trigger alerts", brief)
+            self.assertIn("## Journal reminder", brief)
+
+    def test_format_shareable_report_includes_portfolio_warning_and_triggers(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "AMD",
+                    "score": 84,
+                    "classification": "A-list",
+                    "setup_bucket": "A1",
+                    "setup": "breakout",
+                    "last": 100.0,
+                    "vwap": 99.0,
+                    "preferred_entry_low": 99.0,
+                    "preferred_entry_high": 100.0,
+                    "breakout_level": 101.0,
+                    "invalidation_level": 94.0,
+                    "volume_ratio": 2.4,
+                    "distance_from_high_pct": -1.2,
+                    "day_change_pct": 5.1,
+                    "spread_bps": 10.0,
+                    "earnings_warning": "Watch",
+                    "sector": "Technology",
+                    "industry": "Semiconductors",
+                    "thematic_tags": "Semiconductor, AI Compute",
+                    "priority_score": 61,
+                    "priority_label": "Follow actively",
+                    "buy_trigger": "price holds above VWAP and stays constructive around 99.00–100.00",
+                    "breakout_trigger": "breaks above 101.00 with expanding volume",
+                    "pullback_trigger": "pulls back into 99.00–100.00 and reclaims VWAP",
+                    "invalidation_trigger": "loses VWAP or breaks below 94.00",
+                    "avoid_trigger": "loses VWAP or QQQ reverses lower",
+                    "exposure_categories": "AI / Datacenter, Semiconductors",
+                }
+            ]
+        )
+        regime_report = {
+            "market_regime": "Risk-on",
+            "momentum_odds": "Favorable",
+            "sector_strength": {"SOXX": "Strong", "AI Software": "Strong", "Crypto Miners": "Neutral"},
+        }
+
+        brief = screener.format_shareable_report(frame, regime_report, ["IREN", "APLD", "CORE", "NVDA"])
+
+        self.assertIn("1. AMD — Follow actively", brief)
+        self.assertIn("### AMD", brief)
+        self.assertIn("Buy trigger:", brief)
+        self.assertIn("Portfolio warning", brief)
+        self.assertIn("AI / Datacenter exposure is already concentrated", brief)
+
+    def test_portfolio_overlap_only_adds_warning_metadata(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "NVDA",
+                    "score": 84,
+                    "classification": "A-list",
+                    "setup_bucket": "A1",
+                    "setup": "breakout",
+                    "last": 100.0,
+                    "vwap": 99.0,
+                    "preferred_entry_low": 99.0,
+                    "preferred_entry_high": 100.0,
+                    "volume_ratio": 2.4,
+                    "distance_from_high_pct": -1.2,
+                    "day_change_pct": 5.1,
+                    "spread_bps": 10.0,
+                    "earnings_warning": "Watch",
+                    "chase_risk": "Low",
+                    "sector": "Technology",
+                    "industry": "Semiconductors",
+                    "thematic_tags": "Semiconductor, AI Compute",
+                }
+            ]
+        )
+        regime_report = {
+            "market_regime": "Risk-on",
+            "momentum_odds": "Favorable",
+            "sector_strength": {"SOXX": "Strong", "AI Software": "Strong", "Crypto Miners": "Neutral"},
+        }
+
+        without_overlap = screener.enrich_with_intraday_assistant(frame, regime_report, [])
+        with_overlap = screener.enrich_with_intraday_assistant(
+            frame, regime_report, ["IREN", "APLD", "CORE", "NVDA"]
+        )
+
+        self.assertEqual(without_overlap.loc[0, "priority_score"], with_overlap.loc[0, "priority_score"])
+        self.assertEqual(without_overlap.loc[0, "priority_label"], with_overlap.loc[0, "priority_label"])
+        self.assertEqual(with_overlap.loc[0, "portfolio_overlap"], "AI / Datacenter")
 
 
 if __name__ == "__main__":
