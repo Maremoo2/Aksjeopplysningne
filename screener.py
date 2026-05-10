@@ -143,6 +143,13 @@ DEFAULT_RECOMMENDATION_LOG_PATH = DEFAULT_LOG_PATH
 DEFAULT_PERFORMANCE_OUTPUT_DIR = REPO_ROOT / "reports" / "performance"
 DEFAULT_DATA_QUALITY_OUTPUT_DIR = REPO_ROOT / "reports" / "data_quality"
 PORTFOLIO_CONCENTRATION_WARNING_THRESHOLD = 2
+DEFAULT_REPORT_VALUES: dict[str, Any] = {
+    "classification": "",
+    "score": 0,
+    "reasons": "",
+    "day_change_pct": 0,
+    "day_change_source": "",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +229,13 @@ def safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def ensure_report_defaults(df: pd.DataFrame) -> pd.DataFrame:
+    missing = {key: value for key, value in DEFAULT_REPORT_VALUES.items() if key not in df.columns}
+    if not missing:
+        return df
+    return df.assign(**missing)
 
 
 def _watchlist_items_from_frame(df: pd.DataFrame) -> list[WatchlistItem]:
@@ -349,9 +363,11 @@ def fetch_yahoo_group_with_health(
             ticker_counts[source_key] = len(entries)
         except RuntimeError as exc:
             unavailable_sources.append(source_key)
-            if source_key not in OPTIONAL_YAHOO_SOURCES:
+            if source_key in OPTIONAL_YAHOO_SOURCES:
+                logger.debug("Optional screener %s unavailable, skipping: %s", source_key, exc)
+            else:
                 logger.warning("%s unavailable, skipping", source_key)
-            logger.debug("  Detail: %s", exc)
+                logger.debug("  Detail: %s", exc)
             errors.append(str(exc))
             continue
 
@@ -1872,8 +1888,7 @@ def format_shareable_report(
     portfolio_holdings = portfolio_holdings or []
     tracking_status = tracking_status or _tracking_status_message(run_type)
     market_status, data_mode, closed_market_warning = _market_session_context(market, reference_time_utc)
-    if "classification" not in df.columns:
-        df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
+    df = ensure_report_defaults(df)
     missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}
     if missing_cols:
         df = df.assign(**missing_cols)
@@ -2030,8 +2045,7 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [f"# Daily Momentum Report ({now})", ""]
 
-    if "classification" not in df.columns:
-        df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
+    df = ensure_report_defaults(df)
     missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}
     if missing_cols:
         df = df.assign(**missing_cols)
@@ -2325,10 +2339,7 @@ def main() -> None:
             rows.append({"ticker": item.ticker, "category": item.category, "error": str(exc)})
 
     df = pd.DataFrame(rows)
-    if "classification" not in df.columns:
-        df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
-    elif "score" not in df.columns:
-        df = df.assign(score=0)
+    df = ensure_report_defaults(df)
     if "score" in df.columns:
         df = df.sort_values(by="score", ascending=False, na_position="last")
 
