@@ -11,8 +11,10 @@ from utils.alpaca_credentials import resolve_alpaca_credentials
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
         self._payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
 
     def raise_for_status(self) -> None:
         return None
@@ -79,6 +81,19 @@ class ValidateDataConnectionsTests(unittest.TestCase):
 
     @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
     @patch("scripts.validate_data_connections.requests.get")
+    def test_empty_snapshots_error_reports_no_usable_snapshots(self, mock_get, mock_resolve) -> None:
+        mock_resolve.return_value = resolve_alpaca_credentials(
+            {"ALPACA_API_KEY": "key", "ALPACA_SECRET_KEY": "secret"}
+        )
+        mock_get.return_value = _FakeResponse({"snapshots": {}})
+        result = validate_data_connections._check_alpaca_provider()
+        self.assertEqual(result["status"], "FAIL")
+        error_text = result["errors"][0]
+        self.assertIn("no usable snapshots", error_text.lower())
+        self.assertIn("snapshot_keys_found", result["details"])
+
+    @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
+    @patch("scripts.validate_data_connections.requests.get")
     def test_validation_artifacts_do_not_contain_secret_values(self, mock_get, mock_resolve) -> None:
         secret_value = "super-secret-value"
         mock_resolve.return_value = resolve_alpaca_credentials(
@@ -120,6 +135,61 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         blob = f"{markdown}\n{payload}"
         self.assertNotIn(secret_value, blob)
 
+    @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
+    @patch("scripts.validate_data_connections.requests.get")
+    def test_markdown_shows_provider_and_credential_alias_names_not_values(self, mock_get, mock_resolve) -> None:
+        secret_value = "my-actual-secret"
+        mock_resolve.return_value = resolve_alpaca_credentials(
+            {"ALPACA_API_KEY": "my-actual-key", "ALPACA_SECRET_KEY": secret_value}
+        )
+        mock_get.return_value = _FakeResponse(
+            {
+                "snapshots": {
+                    "AAPL": {"latestTrade": {"p": 1}},
+                    "MSFT": {"latestTrade": {"p": 1}},
+                    "NVDA": {"latestTrade": {"p": 1}},
+                }
+            }
+        )
+        cred_names = {"api_key_env_var": "ALPACA_API_KEY", "secret_key_env_var": "ALPACA_SECRET_KEY"}
+        with (
+            patch.object(
+                validate_data_connections,
+                "_alpaca_credential_env_var_names",
+                return_value=cred_names,
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_yahoo_screeners",
+                return_value={"name": "Yahoo", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_yahoo_fallback",
+                return_value={"name": "Yahoo fallback", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_nordic_universes",
+                return_value={"name": "Nordic", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_end_to_end_dry_run",
+                return_value={"name": "Dry run", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+        ):
+            payload = validate_data_connections.build_validation_payload("alpaca", "all")
+        markdown = validate_data_connections.render_validation_markdown(payload)
+        # Provider is shown
+        self.assertIn("alpaca", markdown)
+        # Credential env-var names are shown
+        self.assertIn("ALPACA_API_KEY", markdown)
+        self.assertIn("ALPACA_SECRET_KEY", markdown)
+        # Actual secret/key values are NOT shown
+        self.assertNotIn(secret_value, markdown)
+        self.assertNotIn("my-actual-key", markdown)
+
     def test_report_renders_pass_warn_fail(self) -> None:
         payload = {
             "overall_status": "WARN",
@@ -148,7 +218,7 @@ class ValidateDataConnectionsTests(unittest.TestCase):
             "name": "Alpaca provider status",
             "status": "FAIL",
             "warnings": [],
-            "errors": ["Alpaca returned no usable snapshots for sample symbols"],
+            "errors": ["Alpaca returned no usable snapshots for sample symbols (HTTP 200; body: '{}')"],
             "details": {},
         }
         pass_check = {"name": "PASS", "status": "PASS", "warnings": [], "errors": [], "details": {}}
@@ -168,7 +238,7 @@ class ValidateDataConnectionsTests(unittest.TestCase):
             "name": "Alpaca provider status",
             "status": "FAIL",
             "warnings": [],
-            "errors": ["Alpaca returned no usable snapshots for sample symbols"],
+            "errors": ["Alpaca returned no usable snapshots for sample symbols (HTTP 200; body: '{}')"],
             "details": {},
         }
         pass_check = {"name": "PASS", "status": "PASS", "warnings": [], "errors": [], "details": {}}
@@ -181,7 +251,7 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         ):
             payload = validate_data_connections.build_validation_payload("alpaca", "all")
         self.assertEqual(payload["overall_status"], "FAIL")
-        self.assertIn("Alpaca returned no usable snapshots for sample symbols", payload["errors"])
+        self.assertIn("Alpaca returned no usable snapshots for sample symbols", payload["errors"][0])
 
     def test_nordic_universe_files_have_required_columns(self) -> None:
         result = validate_data_connections._check_nordic_universes()
