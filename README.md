@@ -9,7 +9,7 @@ Aksjeopplysningne is a discretionary momentum-screening and trading-assistant to
 ## Hva det gjør
 
 - Leser tickere fra `watchlist.csv` eller henter live fra Yahoo Finance screeners
-- Henter intradag-data via Yahoo (`yfinance`) eller valgfritt Alpaca for USA (kun data, ingen trading)
+- Henter intradag-data via Yahoo (`yfinance`) eller valgfri Alpaca for USA (kun data, ingen trading)
 - Regner ut momentum-score (0-100-ish) basert på enkle regler
 - Beriker hver ticker med sektor/industri/thematic tags, market-cap-tier, float-risk, ATR%, premarket gap/volume og earnings-nærhet
 - Lager enkel catalyst-hook (nyhetsheadlines + sentiment-tag) og insider-placeholder
