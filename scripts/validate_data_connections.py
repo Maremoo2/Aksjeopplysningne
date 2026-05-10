@@ -37,6 +37,7 @@ REQUIRED_NORDIC_COLUMNS = {"ticker", "company", "country", "exchange", "theme", 
 VALID_NORDIC_SUFFIXES = (".OL", ".ST", ".CO", ".HE")
 ALPACA_SAMPLE = ("AAPL", "MSFT", "NVDA")
 AVAILABLE_STATUS = {"PASS": 0, "WARN": 1, "FAIL": 2}
+_ALPACA_RESPONSE_BODY_SNIPPET_LENGTH = 500
 
 
 def _worst_status(statuses: list[str]) -> str:
@@ -136,10 +137,19 @@ def _check_alpaca_provider(timeout: int = 15) -> dict[str, Any]:
         check["details"]["error_type"] = type(exc).__name__
         return check
 
+    http_status = response.status_code
+    raw_body = response.text[:_ALPACA_RESPONSE_BODY_SNIPPET_LENGTH]
+    check["details"]["http_status"] = http_status
+    check["details"]["raw_response_snippet"] = raw_body
+
     snapshots = payload.get("snapshots", {}) if isinstance(payload, dict) else {}
     available = [symbol for symbol in ALPACA_SAMPLE if isinstance(snapshots.get(symbol), dict) and snapshots.get(symbol)]
     if not available:
-        _fail(check, "Alpaca returned no usable snapshots for sample symbols")
+        _fail(
+            check,
+            f"Alpaca returned no usable snapshots for sample symbols"
+            f" (HTTP {http_status}; body: {raw_body!r})",
+        )
     check["details"]["available_symbols"] = available
     return check
 

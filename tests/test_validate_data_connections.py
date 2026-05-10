@@ -11,8 +11,10 @@ from utils.alpaca_credentials import resolve_alpaca_credentials
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
         self._payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
 
     def raise_for_status(self) -> None:
         return None
@@ -76,6 +78,21 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         self.assertIn("data.alpaca.markets", called_url)
         self.assertNotIn("trading", called_url)
         self.assertNotIn("/orders", called_url)
+
+    @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
+    @patch("scripts.validate_data_connections.requests.get")
+    def test_empty_snapshots_error_includes_http_status_and_body(self, mock_get, mock_resolve) -> None:
+        mock_resolve.return_value = resolve_alpaca_credentials(
+            {"ALPACA_API_KEY": "key", "ALPACA_SECRET_KEY": "secret"}
+        )
+        mock_get.return_value = _FakeResponse({"snapshots": {}})
+        result = validate_data_connections._check_alpaca_provider()
+        self.assertEqual(result["status"], "FAIL")
+        error_text = result["errors"][0]
+        self.assertIn("HTTP 200", error_text)
+        self.assertIn("body:", error_text)
+        self.assertIn("http_status", result["details"])
+        self.assertIn("raw_response_snippet", result["details"])
 
     @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
     @patch("scripts.validate_data_connections.requests.get")
@@ -148,7 +165,7 @@ class ValidateDataConnectionsTests(unittest.TestCase):
             "name": "Alpaca provider status",
             "status": "FAIL",
             "warnings": [],
-            "errors": ["Alpaca returned no usable snapshots for sample symbols"],
+            "errors": ["Alpaca returned no usable snapshots for sample symbols (HTTP 200; body: '{}')"],
             "details": {},
         }
         pass_check = {"name": "PASS", "status": "PASS", "warnings": [], "errors": [], "details": {}}
@@ -168,7 +185,7 @@ class ValidateDataConnectionsTests(unittest.TestCase):
             "name": "Alpaca provider status",
             "status": "FAIL",
             "warnings": [],
-            "errors": ["Alpaca returned no usable snapshots for sample symbols"],
+            "errors": ["Alpaca returned no usable snapshots for sample symbols (HTTP 200; body: '{}')"],
             "details": {},
         }
         pass_check = {"name": "PASS", "status": "PASS", "warnings": [], "errors": [], "details": {}}
@@ -181,7 +198,7 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         ):
             payload = validate_data_connections.build_validation_payload("alpaca", "all")
         self.assertEqual(payload["overall_status"], "FAIL")
-        self.assertIn("Alpaca returned no usable snapshots for sample symbols", payload["errors"])
+        self.assertIn("Alpaca returned no usable snapshots for sample symbols", payload["errors"][0])
 
     def test_nordic_universe_files_have_required_columns(self) -> None:
         result = validate_data_connections._check_nordic_universes()
