@@ -160,8 +160,10 @@ class ScreenerTests(unittest.TestCase):
             brief = brief_path.read_text(encoding="utf-8")
             self.assertIn("Market regime: Risk-on", brief)
             self.assertIn("Strong sectors: Semiconductors, AI Software, Crypto Miners", brief)
-            self.assertIn("## Intraday priority", brief)
-            self.assertIn("## Trigger alerts", brief)
+            self.assertIn("## Top Focus Today", brief)
+            self.assertIn("BUY SETUP", brief)
+            self.assertIn("Nordnet alerts:", brief)
+            self.assertIn("Why this stock?", brief)
             self.assertIn("## Journal reminder", brief)
 
     def test_format_shareable_report_includes_portfolio_warning_and_triggers(self) -> None:
@@ -189,11 +191,18 @@ class ScreenerTests(unittest.TestCase):
                     "thematic_tags": "Semiconductor, AI Compute",
                     "priority_score": 61,
                     "priority_label": "Follow actively",
+                    "action_label": "BUY SETUP",
+                    "personal_fit_label": "Good fit",
+                    "why_this_stock": "A1 score 84, 2.4x relative volume, above VWAP, semiconductors leadership is strong, good fit for AI / Datacenter, Semiconductors",
                     "buy_trigger": "price holds above VWAP and stays constructive around 99.00–100.00",
                     "breakout_trigger": "breaks above 101.00 with expanding volume",
                     "pullback_trigger": "pulls back into 99.00–100.00 and reclaims VWAP",
                     "invalidation_trigger": "loses VWAP or breaks below 94.00",
                     "avoid_trigger": "loses VWAP or QQQ reverses lower",
+                    "pullback_alert": "99.00–100.00",
+                    "breakout_alert": "101.00",
+                    "risk_alert": "below 94.00",
+                    "target_alert": "104.00 (stretch 107.00)",
                     "exposure_categories": "AI / Datacenter, Semiconductors",
                 }
             ]
@@ -206,9 +215,11 @@ class ScreenerTests(unittest.TestCase):
 
         brief = screener.format_shareable_report(frame, regime_report, ["IREN", "APLD", "CORE", "NVDA"])
 
-        self.assertIn("1. AMD — Follow actively", brief)
-        self.assertIn("### AMD", brief)
-        self.assertIn("Buy trigger:", brief)
+        self.assertIn("### 1. AMD — BUY SETUP", brief)
+        self.assertIn("personal fit Good fit", brief)
+        self.assertIn("Why this stock?", brief)
+        self.assertIn("Nordnet alerts: pullback 99.00–100.00 | breakout 101.00 | risk/stop below 94.00 | target 104.00 (stretch 107.00)", brief)
+        self.assertIn("Buy only if:", brief)
         self.assertIn("Portfolio warning", brief)
         self.assertIn("AI / Datacenter exposure is already concentrated", brief)
 
@@ -250,7 +261,66 @@ class ScreenerTests(unittest.TestCase):
 
         self.assertEqual(without_overlap.loc[0, "priority_score"], with_overlap.loc[0, "priority_score"])
         self.assertEqual(without_overlap.loc[0, "priority_label"], with_overlap.loc[0, "priority_label"])
+        self.assertEqual(with_overlap.loc[0, "action_label"], "BUY SETUP")
+        self.assertEqual(with_overlap.loc[0, "personal_fit_label"], "Good fit")
         self.assertEqual(with_overlap.loc[0, "portfolio_overlap"], "AI / Datacenter")
+
+    def test_enrich_with_intraday_assistant_assigns_medium_and_poor_personal_fit_labels(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "DDOG",
+                    "score": 58,
+                    "classification": "B-list",
+                    "setup_bucket": "B-list",
+                    "setup": "continuation",
+                    "last": 100.0,
+                    "vwap": 99.0,
+                    "preferred_entry_low": 98.0,
+                    "preferred_entry_high": 99.0,
+                    "volume_ratio": 1.8,
+                    "distance_from_high_pct": -3.0,
+                    "day_change_pct": 3.2,
+                    "spread_bps": 12.0,
+                    "earnings_warning": "None",
+                    "chase_risk": "Low",
+                    "sector": "Technology",
+                    "industry": "Software - Infrastructure",
+                    "thematic_tags": "Cloud, AI Software",
+                },
+                {
+                    "ticker": "KO",
+                    "score": 32,
+                    "classification": "C-list",
+                    "setup_bucket": "C-list",
+                    "setup": "pullback",
+                    "last": 60.0,
+                    "vwap": 61.0,
+                    "preferred_entry_low": 59.0,
+                    "preferred_entry_high": 60.0,
+                    "volume_ratio": 0.9,
+                    "distance_from_high_pct": -8.0,
+                    "day_change_pct": -1.1,
+                    "spread_bps": 8.0,
+                    "earnings_warning": "None",
+                    "chase_risk": "Low",
+                    "sector": "Consumer Defensive",
+                    "industry": "Beverages - Non-Alcoholic",
+                    "thematic_tags": "Consumer Staples",
+                },
+            ]
+        )
+        regime_report = {
+            "market_regime": "Risk-on",
+            "momentum_odds": "Favorable",
+            "sector_strength": {"SOXX": "Strong", "AI Software": "Strong", "Crypto Miners": "Neutral"},
+        }
+
+        enriched = screener.enrich_with_intraday_assistant(frame, regime_report, [])
+
+        personal_fit_by_ticker = dict(zip(enriched["ticker"], enriched["personal_fit_label"]))
+        self.assertEqual(personal_fit_by_ticker["DDOG"], "Medium fit")
+        self.assertEqual(personal_fit_by_ticker["KO"], "Poor fit")
 
 
 if __name__ == "__main__":

@@ -28,6 +28,21 @@ A1_STRONG_CONTINUATION_DISTANCE_THRESHOLD = -1.5
 A1_STRONG_CONTINUATION_VOLUME_THRESHOLD = 3.0
 SPREAD_PENALTY_THRESHOLD_BPS = 30
 BASIS_POINTS_MULTIPLIER = 10000
+PERSONAL_THEME_CATEGORIES: tuple[str, ...] = (
+    "AI / Datacenter",
+    "Semiconductors",
+    "Cybersecurity",
+    "Crypto miners",
+    "Space / Aerospace",
+)
+ADJACENT_THEME_KEYWORDS: tuple[str, ...] = (
+    "ai software",
+    "ai compute",
+    "ai infrastructure",
+    "power infrastructure",
+    "hpc / compute infrastructure",
+    "cloud",
+)
 
 # Yahoo Finance predefined screener IDs
 YAHOO_SCREENER_IDS: dict[str, str] = {
@@ -857,6 +872,123 @@ def _market_proxy(categories: tuple[str, ...]) -> str:
     return "QQQ"
 
 
+def _personal_theme_fit(
+    row: dict[str, Any] | pd.Series,
+    exposure_categories: tuple[str, ...],
+) -> tuple[str, tuple[str, ...]]:
+    matches = tuple(category for category in PERSONAL_THEME_CATEGORIES if category in exposure_categories)
+    if matches:
+        return ("Good fit", matches)
+
+    search_text = " | ".join(
+        str(row.get(field, "")) for field in ("sector", "industry", "thematic_tags", "category", "reasons")
+    ).lower()
+    if any(keyword in search_text for keyword in ADJACENT_THEME_KEYWORDS):
+        return ("Medium fit", ())
+
+    return ("Poor fit", ())
+
+
+def _action_label(
+    row: dict[str, Any] | pd.Series,
+    priority_score: int,
+    regime_report: dict[str, Any],
+    personal_fit_label: str,
+) -> str:
+    bucket = str(row.get("setup_bucket", row.get("classification", "")))
+    chase_risk = str(row.get("chase_risk", ""))
+    last = as_float(row.get("last"))
+    vwap = as_float(row.get("vwap"))
+    spread_bps = as_float(row.get("spread_bps"))
+    categories = _row_exposure_categories(row)
+    _, sector_strength = _primary_sector_strength(categories, regime_report)
+    regime = str(regime_report.get("market_regime", "Unknown"))
+
+    if chase_risk == "High" or str(row.get("priority_label", "")) == "Do not chase":
+        return "DO NOT CHASE"
+    if bucket == "C-list" or personal_fit_label == "Poor fit":
+        return "AVOID"
+    if last is not None and vwap is not None and last <= vwap and priority_score < 45:
+        return "AVOID"
+    if spread_bps is not None and spread_bps > SPREAD_PENALTY_THRESHOLD_BPS * 2:
+        return "AVOID"
+    if regime in {"Risk-off", "Panic"} and sector_strength == "Weak":
+        return "AVOID"
+    if bucket == "A2":
+        return "WAIT PULLBACK"
+    if (
+        bucket == "A1"
+        and priority_score >= 55
+        and personal_fit_label != "Poor fit"
+        and last is not None
+        and vwap is not None
+        and last > vwap
+    ):
+        return "BUY SETUP"
+    return "WATCH"
+
+
+def _alert_levels(row: dict[str, Any] | pd.Series) -> dict[str, str]:
+    entry_low = _display_number(row.get("preferred_entry_low"), decimals=2)
+    entry_high = _display_number(row.get("preferred_entry_high"), decimals=2)
+    breakout = _display_number(row.get("breakout_level"), decimals=2)
+    stop = _display_number(row.get("stop_level"), decimals=2)
+    invalidation = _display_number(row.get("invalidation_level"), decimals=2)
+    target_1 = _display_number(row.get("target_1"), decimals=2)
+    target_2 = _display_number(row.get("target_2"), decimals=2)
+    pullback_alert = f"{entry_low}–{entry_high}" if entry_low != "n/a" and entry_high != "n/a" else "n/a"
+    risk_level = stop if stop != "n/a" else invalidation
+    if risk_level != "n/a":
+        risk_level = f"below {risk_level}"
+    target_alert = target_1
+    if target_1 != "n/a" and target_2 != "n/a":
+        target_alert = f"{target_1} (stretch {target_2})"
+    return {
+        "pullback_alert": pullback_alert,
+        "breakout_alert": breakout,
+        "risk_alert": risk_level,
+        "target_alert": target_alert,
+    }
+
+
+def _why_this_stock(
+    row: dict[str, Any] | pd.Series,
+    regime_report: dict[str, Any],
+    personal_fit_label: str,
+    personal_fit_matches: tuple[str, ...],
+) -> str:
+    bits: list[str] = []
+    score = safe_int(row.get("score", 0))
+    bucket = _display_text(row.get("setup_bucket"), _display_text(row.get("classification"), "n/a"))
+    bits.append(f"{bucket} score {score}")
+
+    volume_ratio = as_float(row.get("volume_ratio"))
+    if volume_ratio is not None and volume_ratio > 0:
+        bits.append(f"{volume_ratio:.1f}x relative volume")
+
+    last = as_float(row.get("last"))
+    vwap = as_float(row.get("vwap"))
+    if last is not None and vwap is not None:
+        bits.append("above VWAP" if last > vwap else "testing VWAP")
+
+    distance_from_high = as_float(row.get("distance_from_high_pct"))
+    if distance_from_high is not None:
+        bits.append(f"{distance_from_high:.1f}% from high")
+
+    category, sector_strength = _primary_sector_strength(_row_exposure_categories(row), regime_report)
+    if sector_strength == "Strong":
+        bits.append(f"{category.lower()} leadership is strong")
+    elif sector_strength == "Weak":
+        bits.append(f"{category.lower()} is lagging")
+
+    if personal_fit_matches:
+        bits.append(f"{personal_fit_label.lower()} for {', '.join(personal_fit_matches)}")
+    else:
+        bits.append(personal_fit_label.lower())
+
+    return ", ".join(bits)
+
+
 def _priority_label(row: dict[str, Any] | pd.Series, priority_score: int) -> str:
     bucket = str(row.get("setup_bucket", row.get("classification", "")))
     chase_risk = str(row.get("chase_risk", ""))
@@ -930,7 +1062,7 @@ def _priority_score(
     row: dict[str, Any] | pd.Series,
     regime_report: dict[str, Any],
     concentrated_categories: set[str],
-) -> tuple[int, tuple[str, ...], tuple[str, ...]]:
+) -> tuple[int, tuple[str, ...], tuple[str, ...], str, tuple[str, ...]]:
     bucket = str(row.get("setup_bucket", row.get("classification", "")))
     last = as_float(row.get("last"))
     vwap = as_float(row.get("vwap"))
@@ -945,6 +1077,7 @@ def _priority_score(
     overlap = tuple(sorted(category for category in categories if category in concentrated_categories))
     # Overlap is retained as warning metadata for the brief, not as a ranking penalty.
     _, sector_strength = _primary_sector_strength(categories, regime_report)
+    personal_fit_label, personal_fit_matches = _personal_theme_fit(row, categories)
 
     score = {
         "A1": 30,
@@ -974,6 +1107,13 @@ def _priority_score(
     elif sector_strength == "Weak":
         score -= 8
 
+    if personal_fit_label == "Good fit":
+        score += 10
+    elif personal_fit_label == "Medium fit":
+        score += 4
+    else:
+        score -= 6
+
     regime = str(regime_report.get("market_regime", "Unknown"))
     if regime == "Risk-on":
         score += 8
@@ -1002,7 +1142,7 @@ def _priority_score(
     elif earnings_warning == "Watch":
         score -= 5
 
-    return (max(score, 0), categories, overlap)
+    return (max(score, 0), categories, overlap, personal_fit_label, personal_fit_matches)
 
 
 def build_portfolio_warnings(df: pd.DataFrame, portfolio_holdings: list[str]) -> list[str]:
@@ -1045,15 +1185,24 @@ def enrich_with_intraday_assistant(
 
     extras: list[dict[str, Any]] = []
     for row in df.to_dict(orient="records"):
-        priority_score, categories, overlap = _priority_score(row, regime_report, concentrated_categories)
+        priority_score, categories, overlap, personal_fit_label, personal_fit_matches = _priority_score(
+            row, regime_report, concentrated_categories
+        )
         trigger_rules = _build_trigger_rules(row, regime_report)
+        action_label = _action_label(row, priority_score, regime_report, personal_fit_label)
+        alert_levels = _alert_levels(row)
         extras.append(
             {
                 "priority_score": priority_score,
                 "priority_label": _priority_label(row, priority_score),
+                "action_label": action_label,
                 "exposure_categories": ", ".join(categories) if categories else "None",
                 "portfolio_overlap": ", ".join(overlap) if overlap else "",
+                "personal_fit_label": personal_fit_label,
+                "personal_fit_themes": ", ".join(personal_fit_matches) if personal_fit_matches else "",
+                "why_this_stock": _why_this_stock(row, regime_report, personal_fit_label, personal_fit_matches),
                 **trigger_rules,
+                **alert_levels,
             }
         )
 
@@ -1244,7 +1393,7 @@ def format_shareable_report(
             f"- Momentum odds: {regime_report.get('momentum_odds', 'Unknown')}",
             f"- Strong sectors: {', '.join(strong_sectors) if strong_sectors else 'None'}",
             "",
-            "## Intraday priority",
+            "## Top Focus Today",
         ]
     )
 
@@ -1254,34 +1403,45 @@ def format_shareable_report(
     else:
         ranked = _rank_candidates(ranked)
 
-    priority = ranked.head(5)
-    if priority.empty:
+    focus = ranked.head(5)
+    if focus.empty:
         lines.append("- (none)")
     else:
-        for idx, (_, row) in enumerate(priority.iterrows(), start=1):
-            label = _display_text(row.get("priority_label"), "Secondary watch")
-            lines.append(f"{idx}. {row.get('ticker', '')} — {label} — {_priority_action_hint(row)}")
-    lines.append("")
-
-    lines.append("## Trigger alerts")
-    if priority.empty:
-        lines.append("- (none)")
-    else:
-        for _, row in priority.iterrows():
+        for idx, (_, row) in enumerate(focus.iterrows(), start=1):
+            last_value = as_float(row.get("last"))
+            vwap_value = as_float(row.get("vwap"))
+            vwap_status = "n/a"
+            if last_value is not None and vwap_value is not None:
+                vwap_status = "above" if last_value > vwap_value else "below"
             lines.extend(
                 [
-                    f"### {row.get('ticker', '')}",
-                    f"- Buy trigger: {_display_text(row.get('buy_trigger'), 'n/a')}",
-                    f"- Breakout trigger: {_display_text(row.get('breakout_trigger'), 'n/a')}",
-                    f"- Pullback trigger: {_display_text(row.get('pullback_trigger'), 'n/a')}",
-                    f"- Invalidation: {_display_text(row.get('invalidation_trigger'), 'n/a')}",
-                    f"- Avoid trigger: {_display_text(row.get('avoid_trigger'), 'n/a')}",
+                    f"### {idx}. {row.get('ticker', '')} — {_display_text(row.get('action_label'), 'WATCH')}",
+                    (
+                        f"- Snapshot: {_display_text(row.get('setup_bucket'), 'n/a')} | "
+                        f"priority {_display_number(row.get('priority_score'))} | "
+                        f"personal fit {_display_text(row.get('personal_fit_label'), 'n/a')} | "
+                        f"rel vol {_display_number(row.get('volume_ratio'), decimals=1, suffix='x')} | "
+                        f"VWAP {vwap_status} | "
+                        f"distance from high {_display_number(row.get('distance_from_high_pct'), decimals=2, suffix='%')} | "
+                        f"chase {_display_text(row.get('chase_risk'), 'n/a')} | "
+                        f"spread {_display_number(row.get('spread_bps'), decimals=0, suffix=' bps')}"
+                    ),
+                    f"- Why this stock? {_display_text(row.get('why_this_stock'), 'n/a')}",
+                    (
+                        f"- Nordnet alerts: pullback {_display_text(row.get('pullback_alert'), 'n/a')} | "
+                        f"breakout {_display_text(row.get('breakout_alert'), 'n/a')} | "
+                        f"risk/stop {_display_text(row.get('risk_alert'), 'n/a')} | "
+                        f"target {_display_text(row.get('target_alert'), 'n/a')}"
+                    ),
+                    f"- Buy only if: {_display_text(row.get('buy_trigger'), 'n/a')}",
+                    f"- Avoid if: {_display_text(row.get('avoid_trigger'), 'n/a')}",
                     "",
                 ]
             )
+    lines.append("")
 
     lines.append("## Portfolio warning")
-    warnings = build_portfolio_warnings(priority, portfolio_holdings)
+    warnings = build_portfolio_warnings(focus, portfolio_holdings)
     if warnings:
         for warning in warnings:
             lines.append(f"- {warning}")
