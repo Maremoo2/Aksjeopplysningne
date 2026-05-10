@@ -2,6 +2,10 @@
 
 Lite personlig prosjekt for momentum-screening av aksjer.
 
+## Repository boundary
+
+Aksjeopplysningne is a discretionary momentum-screening and trading-assistant tool. It does not perform live trading, broker execution, autonomous position management, or AI trader shadow/champion model switching. Those belong in the separate AI trader project.
+
 ## Hva det gjør
 
 - Leser tickere fra `watchlist.csv` eller henter live fra Yahoo Finance screeners

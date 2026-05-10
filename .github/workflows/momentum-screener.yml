@@ -26,6 +26,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Repository scope check
+        run: |
+          python scripts/repo_scope_check.py
+
       - name: Run watchlist screener
         run: |
           mkdir -p reports/watchlist

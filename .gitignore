@@ -1,4 +1,7 @@
 __pycache__/
 reports/
+!reports/
+reports/*
+!reports/repo_scope_check.md
 momentum_report_*.csv
 momentum_report_*.md
