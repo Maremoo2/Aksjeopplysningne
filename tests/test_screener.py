@@ -149,6 +149,8 @@ class ScreenerTests(unittest.TestCase):
                         run_type="open",
                         performance_outdir=temp_dir,
                         recommendation_log=str(Path(temp_dir) / "recommendation_log.csv"),
+                        nordic_universe="large_caps",
+                        data_sources_config=str(Path(temp_dir) / "data_sources.yaml"),
                     ),
                 ),
                 patch.object(screener, "load_watchlist", return_value=[screener.WatchlistItem(ticker="AMD")]),

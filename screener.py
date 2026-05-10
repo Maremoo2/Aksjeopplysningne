@@ -14,12 +14,14 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
-import yfinance as yf
+from data_providers import AlpacaProvider, YahooProvider
 from intraday_monitor import build_intraday_summary, write_intraday_report
 from market_regime import build_regime_report
 from recommendation_tracker import DEFAULT_LOG_PATH, load_recommendation_log, snapshot_recommendations
 from strategy_engine import enrich_with_strategy
+from utils.alpaca_credentials import resolve_alpaca_credentials
 from utils.exposure import build_exposure_summary, exposure_categories_for_security
+from utils.nordic_universe import EXCLUDED_TICKERS, TICKER_REPLACEMENTS, load_nordic_universe
 from utils.sector_map import resolve_sector_info
 
 # Risk guardrail tuned for momentum names: flags fast moves that are already
@@ -91,6 +93,14 @@ YAHOO_SCREENER_LABEL: dict[str, str] = {
     "yahoo-52-week-gainers": "52-Week Gainers",
     "yahoo-all-time-high": "All-Time High",
 }
+OPTIONAL_YAHOO_SOURCES: tuple[str, ...] = (
+    "yahoo-trending",
+    "yahoo-unusual-volume",
+    "yahoo-high-beta",
+    "yahoo-52-week-gainers",
+    "yahoo-all-time-high",
+)
+DISABLED_YAHOO_SOURCES_BY_DEFAULT: tuple[str, ...] = OPTIONAL_YAHOO_SOURCES
 
 # Sources included in --source yahoo-momentum (and yahoo-all for backwards compat).
 # Any source that returns HTTP 404 is logged as a warning and skipped gracefully.
@@ -126,9 +136,12 @@ DEFAULT_MIN_MARKET_CAP = 500_000_000.0
 DEFAULT_MIN_VOLUME = 1_000_000.0
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_PORTFOLIO_PATH = REPO_ROOT / "config" / "portfolio.yaml"
+DEFAULT_DATA_SOURCES_CONFIG_PATH = REPO_ROOT / "config" / "data_sources.yaml"
+DEFAULT_WATCHLISTS_DIR = REPO_ROOT / "watchlists"
 DEFAULT_TRADE_JOURNAL_PATH = REPO_ROOT / "data" / "trade_journal.csv"
 DEFAULT_RECOMMENDATION_LOG_PATH = DEFAULT_LOG_PATH
 DEFAULT_PERFORMANCE_OUTPUT_DIR = REPO_ROOT / "reports" / "performance"
+DEFAULT_DATA_QUALITY_OUTPUT_DIR = REPO_ROOT / "reports" / "data_quality"
 PORTFOLIO_CONCENTRATION_WARNING_THRESHOLD = 2
 
 logger = logging.getLogger(__name__)
@@ -141,6 +154,52 @@ class WatchlistItem:
     news: bool = False
     sector_strength: bool = False
     sources: list[str] = field(default_factory=list)
+
+
+def load_data_sources_config(path: Path = DEFAULT_DATA_SOURCES_CONFIG_PATH) -> dict[str, str]:
+    config: dict[str, str] = {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                config[key.strip()] = value.strip().strip("'\"")
+    except FileNotFoundError:
+        return {}
+    return config
+
+
+def resolve_usa_data_provider(
+    market: str,
+    config_path: Path = DEFAULT_DATA_SOURCES_CONFIG_PATH,
+    env: dict[str, str] | None = None,
+) -> tuple[Any, str]:
+    normalized_market = str(market).strip().lower()
+    yahoo_provider = YahooProvider()
+    if normalized_market != "usa":
+        return yahoo_provider, "yahoo"
+
+    config = load_data_sources_config(config_path)
+    provider_name = config.get("usa_data_provider", "yahoo").strip().lower() or "yahoo"
+    if provider_name not in {"yahoo", "alpaca"}:
+        logger.warning("Unknown usa_data_provider '%s', falling back to Yahoo", provider_name)
+        return yahoo_provider, "yahoo"
+    if provider_name == "yahoo":
+        return yahoo_provider, "yahoo"
+
+    credentials = resolve_alpaca_credentials(env)
+    if not credentials.is_configured:
+        logger.info("Alpaca provider requested but missing credentials; falling back to Yahoo data provider.")
+        return yahoo_provider, "yahoo-fallback-missing-credentials"
+
+    try:
+        provider = AlpacaProvider(api_key=credentials.api_key, secret_key=credentials.secret_key)
+    except Exception as exc:
+        logger.warning("Unable to initialize Alpaca provider (%s); falling back to Yahoo.", exc)
+        return yahoo_provider, "yahoo-fallback-provider-init"
+    return provider, "alpaca"
 
 
 def as_bool(value: Any) -> bool:
@@ -165,25 +224,36 @@ def safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def load_watchlist(path: Path) -> list[WatchlistItem]:
-    df = pd.read_csv(path)
+def _watchlist_items_from_frame(df: pd.DataFrame) -> list[WatchlistItem]:
     if "ticker" not in df.columns:
-        raise ValueError(f"{path} må ha kolonnen 'ticker'")
+        raise ValueError("Watchlist må ha kolonnen 'ticker'")
 
     items: list[WatchlistItem] = []
+    seen_tickers: set[str] = set()
     for _, row in df.fillna("").iterrows():
         ticker = str(row["ticker"]).strip().upper()
+        ticker = TICKER_REPLACEMENTS.get(ticker, ticker)
+        if ticker in EXCLUDED_TICKERS:
+            continue
         if not ticker:
             continue
+        if ticker in seen_tickers:
+            continue
+        seen_tickers.add(ticker)
         items.append(
             WatchlistItem(
                 ticker=ticker,
-                category=str(row.get("category", "")).strip(),
+                category=str(row.get("category") or row.get("theme") or "").strip(),
                 news=as_bool(row.get("news", False)),
                 sector_strength=as_bool(row.get("sector_strength", False)),
             )
         )
     return items
+
+
+def load_watchlist(path: Path) -> list[WatchlistItem]:
+    df = pd.read_csv(path)
+    return _watchlist_items_from_frame(df)
 
 
 def load_portfolio_config(path: Path = DEFAULT_PORTFOLIO_PATH) -> list[str]:
@@ -252,24 +322,35 @@ def fetch_yahoo_screener(source_key: str, limit: int) -> list[dict[str, Any]]:
     return results
 
 
-def fetch_yahoo_group(source_keys: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
-    """Fetch from a group of Yahoo screeners, combine and deduplicate.
-
-    Each entry gets a 'sources' list showing which screeners it appeared in.
-    Sources that return HTTP 404 or any other error are logged as warnings and
-    skipped gracefully.  Returns an empty list if *all* sources fail.
-    """
+def fetch_yahoo_group_with_health(
+    source_keys: tuple[str, ...],
+    limit: int,
+    *,
+    disabled_sources: set[str] | None = None,
+    fallback_behavior: str = "Unavailable Yahoo screeners are skipped; run continues with successful sources.",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch from a group of Yahoo screeners, combine and deduplicate with health metadata."""
     seen: dict[str, dict[str, Any]] = {}
     any_success = False
+    disabled = {source for source in (disabled_sources or set()) if source in source_keys}
+    enabled_sources = [source for source in source_keys if source not in disabled]
     errors: list[str] = []
+    successful_sources: list[str] = []
+    unavailable_sources: list[str] = []
+    ticker_counts: dict[str, int] = {}
+    duplicate_hits = 0
 
-    for source_key in source_keys:
+    for source_key in enabled_sources:
         label = YAHOO_SCREENER_LABEL[source_key]
         try:
             entries = fetch_yahoo_screener(source_key, limit)
             any_success = True
+            successful_sources.append(source_key)
+            ticker_counts[source_key] = len(entries)
         except RuntimeError as exc:
-            logger.warning("%s unavailable, skipping", source_key)
+            unavailable_sources.append(source_key)
+            if source_key not in OPTIONAL_YAHOO_SOURCES:
+                logger.warning("%s unavailable, skipping", source_key)
             logger.debug("  Detail: %s", exc)
             errors.append(str(exc))
             continue
@@ -277,6 +358,7 @@ def fetch_yahoo_group(source_keys: tuple[str, ...], limit: int) -> list[dict[str
         for entry in entries:
             ticker = entry["ticker"]
             if ticker in seen:
+                duplicate_hits += 1
                 seen[ticker]["sources"].append(label)
                 # Keep the highest market_cap / price / volume we've seen
                 for field_name in ("price", "market_cap", "volume"):
@@ -290,11 +372,57 @@ def fetch_yahoo_group(source_keys: tuple[str, ...], limit: int) -> list[dict[str
                 seen[ticker] = entry
 
     if not any_success:
-        logger.error("All Yahoo screener fetches failed. Tip: run with --source watchlist instead.")
-        for err in errors:
-            logger.error("  %s", err)
+        all_optional = bool(enabled_sources) and all(source in OPTIONAL_YAHOO_SOURCES for source in enabled_sources)
+        if all_optional:
+            logger.info("Optional Yahoo screeners unavailable; continuing with empty ticker set.")
+        else:
+            logger.warning("All enabled Yahoo screener fetches failed; continuing with empty ticker set.")
+        for err in errors[:3]:
+            logger.debug("  %s", err)
 
-    return list(seen.values())
+    health_report = {
+        "enabled_screeners": enabled_sources,
+        "successful_screeners": successful_sources,
+        "unavailable_screeners": unavailable_sources,
+        "disabled_screeners": sorted(disabled),
+        "fallback_behavior": fallback_behavior,
+        "tickers_returned_per_screener": ticker_counts,
+        "duplicate_tickers_removed": duplicate_hits,
+    }
+    return list(seen.values()), health_report
+
+
+def fetch_yahoo_group(source_keys: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+    entries, _ = fetch_yahoo_group_with_health(source_keys, limit)
+    return entries
+
+
+def write_screener_health_report(report: dict[str, Any], output_dir: Path = DEFAULT_DATA_QUALITY_OUTPUT_DIR) -> tuple[Path, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M")
+    md_path = output_dir / f"screener_health_{stamp}.md"
+    json_path = output_dir / f"screener_health_{stamp}.json"
+    summary_lines = [
+        f"# Screener Health ({stamp})",
+        "",
+        f"- Enabled screeners: {', '.join(report.get('enabled_screeners', [])) or '(none)'}",
+        f"- Successful screeners: {', '.join(report.get('successful_screeners', [])) or '(none)'}",
+        f"- Unavailable screeners: {', '.join(report.get('unavailable_screeners', [])) or '(none)'}",
+        f"- Disabled screeners: {', '.join(report.get('disabled_screeners', [])) or '(none)'}",
+        f"- Fallback behavior: {report.get('fallback_behavior', 'n/a')}",
+        f"- Duplicate tickers removed: {report.get('duplicate_tickers_removed', 0)}",
+        "",
+        "## Ticker count per screener",
+    ]
+    counts = report.get("tickers_returned_per_screener", {})
+    if counts:
+        for screener_name, count in counts.items():
+            summary_lines.append(f"- {screener_name}: {count}")
+    else:
+        summary_lines.append("- (none)")
+    md_path.write_text("\n".join(summary_lines).strip() + "\n", encoding="utf-8")
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return md_path, json_path
 
 
 def fetch_yahoo_all(limit: int) -> list[dict[str, Any]]:
@@ -446,11 +574,22 @@ def sentiment_from_headline(headline: str) -> str:
     return "Neutral"
 
 
-def score_stock(item: WatchlistItem) -> dict[str, Any]:
-    stock = yf.Ticker(item.ticker)
-    intraday = stock.history(period="1d", interval="1m", prepost=True)
+def score_stock(
+    item: WatchlistItem,
+    *,
+    market_data_provider: Any | None = None,
+    yahoo_provider: YahooProvider | None = None,
+) -> dict[str, Any]:
+    yahoo_data = yahoo_provider or YahooProvider()
+    provider = market_data_provider or yahoo_data
+    stock = yahoo_data.ticker(item.ticker)
+    intraday = provider.get_intraday_bars(item.ticker, interval="1m", prepost=True)
     if intraday.empty:
-        intraday = stock.history(period="1d", interval="5m", prepost=True)
+        intraday = provider.get_intraday_bars(item.ticker, interval="5m", prepost=True)
+    if intraday.empty and provider is not yahoo_data:
+        intraday = yahoo_data.get_intraday_bars(item.ticker, interval="1m", prepost=True)
+        if intraday.empty:
+            intraday = yahoo_data.get_intraday_bars(item.ticker, interval="5m", prepost=True)
 
     if intraday.empty:
         return {"ticker": item.ticker, "category": item.category, "error": "No intraday data"}
@@ -465,8 +604,8 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     volume_sum = intraday["Volume"].sum()
     vwap = float((typical * intraday["Volume"]).sum() / volume_sum) if volume_sum else last
 
-    info = stock.info or {}
-    fast_info = stock.fast_info or {}
+    info = yahoo_data.get_info(item.ticker)
+    fast_info = yahoo_data.get_fast_info(item.ticker)
     previous_close = as_float(
         first_non_none(
             fast_info.get("previous_close"),
@@ -494,8 +633,13 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     dist_from_high_pct = ((last - day_high) / day_high) * 100 if day_high else 0.0
     range_pos = (last - day_low) / (day_high - day_low) if day_high != day_low else 0.5
 
-    monthly = stock.history(period="1mo", interval="1d")
-    daily_3m = stock.history(period="3mo", interval="1d")
+    monthly = provider.get_historical_bars(item.ticker, period="1mo", interval="1d")
+    daily_3m = provider.get_historical_bars(item.ticker, period="3mo", interval="1d")
+    if provider is not yahoo_data:
+        if monthly.empty:
+            monthly = yahoo_data.get_historical_bars(item.ticker, period="1mo", interval="1d")
+        if daily_3m.empty:
+            daily_3m = yahoo_data.get_historical_bars(item.ticker, period="3mo", interval="1d")
     avg_volume = float(monthly["Volume"].tail(20).mean()) if not monthly.empty else None
     volume_ratio = (day_volume / avg_volume) if avg_volume and avg_volume > 0 else None
 
@@ -548,10 +692,7 @@ def score_stock(item: WatchlistItem) -> dict[str, Any]:
     sector_info = resolve_sector_info(item.ticker, info)
     thematic_tags = ", ".join(sector_info.thematic_tags) if sector_info.thematic_tags else "None"
 
-    try:
-        raw_news = stock.news or []
-    except Exception:
-        raw_news = []
+    raw_news = yahoo_data.get_news(item.ticker)
     catalysts: list[str] = []
     sentiment_tags: list[str] = []
     for article in raw_news[:3]:
@@ -2086,6 +2227,17 @@ def parse_args() -> argparse.Namespace:
         default=str(DEFAULT_RECOMMENDATION_LOG_PATH),
         help="Recommendation log CSV path",
     )
+    parser.add_argument(
+        "--nordic-universe",
+        default="large_caps",
+        choices=["large_caps", "momentum", "norway", "sweden", "denmark", "finland", "small_caps", "all"],
+        help="Nordic universe selector when market is nordic/global and source is watchlist",
+    )
+    parser.add_argument(
+        "--data-sources-config",
+        default=str(DEFAULT_DATA_SOURCES_CONFIG_PATH),
+        help="Path to data source config file (usa_data_provider)",
+    )
     return parser.parse_args()
 
 
@@ -2095,13 +2247,20 @@ def main() -> None:
     outdir = Path(args.outdir)
     performance_outdir = Path(args.performance_outdir)
     recommendation_log_path = Path(args.recommendation_log)
+    data_sources_config_path = Path(args.data_sources_config)
     outdir.mkdir(parents=True, exist_ok=True)
     performance_outdir.mkdir(parents=True, exist_ok=True)
 
     source = args.source
+    screener_health: dict[str, Any] | None = None
+    market_data_provider, provider_resolution = resolve_usa_data_provider(args.market, data_sources_config_path)
+    yahoo_data_provider = YahooProvider()
 
     if source == "watchlist":
-        watchlist = load_watchlist(Path(args.input))
+        if args.market in {"nordic", "global"} and Path(args.input).name == "watchlist.csv":
+            watchlist = _watchlist_items_from_frame(load_nordic_universe(args.nordic_universe, DEFAULT_WATCHLISTS_DIR))
+        else:
+            watchlist = load_watchlist(Path(args.input))
     else:
         # Fetch from Yahoo screener(s)
         _GROUP_SOURCES: dict[str, tuple[str, ...]] = {
@@ -2110,14 +2269,15 @@ def main() -> None:
             "yahoo-expanded": YAHOO_EXPANDED_SOURCES,
         }
         if source in _GROUP_SOURCES:
-            entries = fetch_yahoo_group(_GROUP_SOURCES[source], args.limit)
-            if not entries:
-                print(
-                    "ERROR: Could not fetch any tickers from Yahoo screeners. "
-                    "Try running with --source watchlist instead.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+            entries, screener_health = fetch_yahoo_group_with_health(
+                _GROUP_SOURCES[source],
+                args.limit,
+                disabled_sources=set(DISABLED_YAHOO_SOURCES_BY_DEFAULT),
+                fallback_behavior=(
+                    "Unavailable optional Yahoo screeners are skipped silently. "
+                    "If none succeed, run continues with an empty list."
+                ),
+            )
         else:
             try:
                 entries = fetch_yahoo_screener(source, args.limit)
@@ -2154,7 +2314,13 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     for item in watchlist:
         try:
-            rows.append(score_stock(item))
+            rows.append(
+                score_stock(
+                    item,
+                    market_data_provider=market_data_provider,
+                    yahoo_provider=yahoo_data_provider,
+                )
+            )
         except Exception as exc:  # pragma: no cover
             rows.append({"ticker": item.ticker, "category": item.category, "error": str(exc)})
 
@@ -2228,6 +2394,13 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
+    if screener_health is not None:
+        screener_health["market"] = args.market
+        screener_health["source"] = source
+        screener_health["provider_resolution"] = provider_resolution
+        health_md, health_json = write_screener_health_report(screener_health)
+        print(f"Saved screener health report: {health_md}")
+        print(f"Saved screener health JSON: {health_json}")
 
     print(report)
     print(f"Saved CSV report: {csv_path}")
