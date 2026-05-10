@@ -338,8 +338,21 @@ def update_recommendation_results(
     suffix = "recommendation_results"
     md_path = output_dir / f"{suffix}_{stamp}.md"
     json_path = output_dir / f"{suffix}_{stamp}.json"
-    md_path.write_text(render_recommendation_results_markdown(updated_rows, mode, as_of), encoding="utf-8")
-    json_path.write_text(json.dumps({"mode": mode, "date": as_of.isoformat(), "rows": updated_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload: dict[str, Any] = {"date": as_of.isoformat()}
+    if json_path.exists():
+        try:
+            existing_payload = json.loads(json_path.read_text(encoding="utf-8"))
+            if isinstance(existing_payload, dict):
+                payload.update(existing_payload)
+        except json.JSONDecodeError:
+            pass
+    payload["date"] = as_of.isoformat()
+    payload[mode] = updated_rows
+    sections = {
+        key: value for key, value in payload.items() if key in {"same-day", "1w"} and isinstance(value, list)
+    }
+    md_path.write_text(render_combined_recommendation_results_markdown(sections, as_of), encoding="utf-8")
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return updated_rows, md_path, json_path
 
 
@@ -368,6 +381,21 @@ def render_recommendation_results_markdown(rows: list[dict[str, str]], mode: str
                 lines.append(
                     f"- {row['ticker']}: {result_text}% | close {row.get('close_price_1w') or 'n/a'} | {row.get('outcome_1w') or 'UNKNOWN'}"
                 )
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def render_combined_recommendation_results_markdown(sections: dict[str, list[dict[str, str]]], as_of: date) -> str:
+    lines = [f"# Recommendation Results ({as_of.isoformat()})", ""]
+    if not sections:
+        lines.append("- No recommendations were updated.")
+        lines.append("")
+        return "\n".join(lines)
+    for mode in ("same-day", "1w"):
+        rows = sections.get(mode)
+        if rows is None:
+            continue
+        lines.append(render_recommendation_results_markdown(rows, mode, as_of).strip())
         lines.append("")
     return "\n".join(lines).strip() + "\n"
 
