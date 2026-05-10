@@ -1,0 +1,5 @@
+ticker,company,country,exchange,theme,liquidity_tier
+EQNR.OL,Equinor,Norway,Oslo Børs,Energy,high
+AKRBP.OL,Aker BP,Norway,Oslo Børs,Energy,mid
+KOG.OL,Kongsberg Gruppen,Norway,Oslo Børs,Defense,high
+MOWI.OL,Mowi,Norway,Oslo Børs,Foods,mid

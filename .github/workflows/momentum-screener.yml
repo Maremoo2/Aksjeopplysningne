@@ -22,6 +22,14 @@ on:
           - midday
           - close
           - manual
+      validate_connections:
+        description: "Validate data connections before running screener"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
   schedule:
     # GitHub cron uses UTC.
     # 14:45 Europe/Oslo summer time = 12:45 UTC.
@@ -34,6 +42,10 @@ jobs:
     env:
       RUN_MARKET: ${{ github.event.inputs.market || 'usa' }}
       RUN_TYPE: ${{ github.event.inputs.rescan_type || 'open' }}
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY || secrets.ALPACA_KEY }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY || secrets.ALPACA_SECRET }}
+      ALPACA_KEY: ${{ secrets.ALPACA_KEY || secrets.ALPACA_API_KEY }}
+      ALPACA_SECRET: ${{ secrets.ALPACA_SECRET || secrets.ALPACA_SECRET_KEY }}
 
     steps:
       - name: Check out repository
@@ -52,6 +64,11 @@ jobs:
       - name: Repository scope check
         run: |
           python scripts/repo_scope_check.py
+
+      - name: Validate data connections
+        if: ${{ github.event.inputs.validate_connections == 'true' }}
+        run: |
+          python scripts/validate_data_connections.py --outdir reports/data_quality
 
       - name: Run selected market workflow
         run: |

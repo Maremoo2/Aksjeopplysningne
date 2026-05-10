@@ -1,0 +1,5 @@
+ticker,company,country,exchange,theme,liquidity_tier
+NOKIA.HE,Nokia,Finland,Nasdaq Helsinki,Technology,high
+KNEBV.HE,Kone B,Finland,Nasdaq Helsinki,Industrials,mid
+NESTE.HE,Neste,Finland,Nasdaq Helsinki,Energy Transition,mid
+UPM.HE,UPM-Kymmene,Finland,Nasdaq Helsinki,Materials,mid
