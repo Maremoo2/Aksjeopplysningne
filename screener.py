@@ -1164,6 +1164,7 @@ def _best_next_action(
     personal_fit_label = str(row.get("personal_fit_label", "")).strip()
     day_change_pct = as_float(row.get("day_change_pct"))
     is_red_name = day_change_pct is not None and day_change_pct < 0
+    # Extended/parabolic setups are treated as chase-risk by default.
     if chase_risk == "High" or action_label == "DO NOT CHASE" or setup == "extended/parabolic":
         return "DO NOT CHASE"
     if confidence_score <= 2:
@@ -1176,13 +1177,21 @@ def _best_next_action(
             or (last is not None and vwap is not None and last <= vwap and confidence_score <= 3)
         ):
             return "REMOVE FROM FOCUS"
-    if is_red_name and last is not None and vwap is not None and last <= vwap and confidence_score >= 4 and bucket != "C-list":
+    is_interesting_red_reclaim = (
+        is_red_name
+        and last is not None
+        and vwap is not None
+        and last <= vwap
+        and confidence_score >= 4
+        and bucket != "C-list"
+    )
+    if is_interesting_red_reclaim:
         return "WAIT FOR VWAP RECLAIM"
     if spread_bps is not None and spread_bps > EXTREME_SPREAD_THRESHOLD_BPS:
         return "WATCH ONLY"
     if setup == "breakout" and confidence_score >= 6:
         return "SET BREAKOUT ALERT"
-    if setup in {"pullback", "continuation", "extended/parabolic"} and confidence_score >= 4:
+    if setup in {"pullback", "continuation"} and confidence_score >= 4:
         return "SET PULLBACK ALERT"
     return "WATCH ONLY"
 
@@ -1676,9 +1685,8 @@ def _market_is_open_for_market(now_utc: datetime, market: str) -> tuple[bool, bo
         str(market).strip().lower(),
         MARKET_HOURS_BY_MARKET["usa"],
     )
-    if now_utc.tzinfo is None:
-        now_utc = now_utc.replace(tzinfo=UTC)
-    now_local = now_utc.astimezone(ZoneInfo(tz_name))
+    normalized_now_utc = now_utc if now_utc.tzinfo is not None else now_utc.replace(tzinfo=UTC)
+    now_local = normalized_now_utc.astimezone(ZoneInfo(tz_name))
     is_weekend = now_local.weekday() >= 5
     if is_weekend:
         return False, True
@@ -1688,16 +1696,16 @@ def _market_is_open_for_market(now_utc: datetime, market: str) -> tuple[bool, bo
     return open_minute_of_day <= minute_of_day <= close_minute_of_day, False
 
 
-def _market_session_context(market: str) -> tuple[str, str, str | None]:
-    now_utc = datetime.now(UTC)
+def _market_session_context(market: str, now_utc: datetime | None = None) -> tuple[str, str, str | None]:
+    reference_now_utc = now_utc or datetime.now(UTC)
     normalized_market = str(market).strip().lower()
     if normalized_market == "global":
-        usa_open, usa_weekend = _market_is_open_for_market(now_utc, "usa")
-        nordic_open, nordic_weekend = _market_is_open_for_market(now_utc, "nordic")
+        usa_open, usa_weekend = _market_is_open_for_market(reference_now_utc, "usa")
+        nordic_open, nordic_weekend = _market_is_open_for_market(reference_now_utc, "nordic")
         is_open = usa_open or nordic_open
         is_weekend = usa_weekend and nordic_weekend
     else:
-        is_open, is_weekend = _market_is_open_for_market(now_utc, normalized_market)
+        is_open, is_weekend = _market_is_open_for_market(reference_now_utc, normalized_market)
     if is_open:
         return ("Open / Regular hours", "Live intraday session data", None)
     if is_weekend:
@@ -1713,12 +1721,16 @@ def format_shareable_report(
     run_type: str = "manual",
     tracking_status: str | None = None,
     intraday_summary: dict[str, Any] | None = None,
+    current_time_utc: datetime | None = None,
 ) -> str:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    reference_time_utc = current_time_utc or datetime.now(UTC)
+    if reference_time_utc.tzinfo is None:
+        reference_time_utc = reference_time_utc.replace(tzinfo=UTC)
+    now = reference_time_utc.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
     lines = [f"# Trading Brief ({now})", ""]
     portfolio_holdings = portfolio_holdings or []
     tracking_status = tracking_status or _tracking_status_message(run_type)
-    market_status, data_mode, closed_market_warning = _market_session_context(market)
+    market_status, data_mode, closed_market_warning = _market_session_context(market, reference_time_utc)
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
     missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}

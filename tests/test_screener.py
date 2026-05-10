@@ -401,9 +401,13 @@ class ScreenerTests(unittest.TestCase):
             ]
         )
         regime_report = {"market_regime": "Risk-on", "momentum_odds": "Favorable", "sector_strength": {}}
-        with patch.object(screener, "datetime") as mock_datetime:
-            mock_datetime.now.return_value = datetime(2026, 5, 9, 12, 0)
-            brief = screener.format_shareable_report(frame, regime_report, [], market="usa")
+        brief = screener.format_shareable_report(
+            frame,
+            regime_report,
+            [],
+            market="usa",
+            current_time_utc=datetime(2026, 5, 9, 12, 0),
+        )
         self.assertIn("Market status: Closed / Weekend / Outside regular hours", brief)
         self.assertIn("Data mode: Latest available session data", brief)
         self.assertIn(
