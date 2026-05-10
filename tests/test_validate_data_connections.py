@@ -137,6 +137,55 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         blob = f"{markdown}\n{payload}"
         self.assertNotIn(secret_value, blob)
 
+    @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
+    @patch("scripts.validate_data_connections.requests.get")
+    def test_markdown_shows_provider_and_credential_alias_names_not_values(self, mock_get, mock_resolve) -> None:
+        secret_value = "my-actual-secret"
+        mock_resolve.return_value = resolve_alpaca_credentials(
+            {"ALPACA_API_KEY": "my-actual-key", "ALPACA_SECRET_KEY": secret_value}
+        )
+        mock_get.return_value = _FakeResponse(
+            {
+                "snapshots": {
+                    "AAPL": {"latestTrade": {"p": 1}},
+                    "MSFT": {"latestTrade": {"p": 1}},
+                    "NVDA": {"latestTrade": {"p": 1}},
+                }
+            }
+        )
+        with (
+            patch.object(
+                validate_data_connections,
+                "_check_yahoo_screeners",
+                return_value={"name": "Yahoo", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_yahoo_fallback",
+                return_value={"name": "Yahoo fallback", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_nordic_universes",
+                return_value={"name": "Nordic", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_end_to_end_dry_run",
+                return_value={"name": "Dry run", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+        ):
+            payload = validate_data_connections.build_validation_payload("alpaca", "all")
+        markdown = validate_data_connections.render_validation_markdown(payload)
+        # Provider is shown
+        self.assertIn("alpaca", markdown)
+        # Credential env-var names are shown
+        self.assertIn("ALPACA_API_KEY", markdown)
+        self.assertIn("ALPACA_SECRET_KEY", markdown)
+        # Actual secret/key values are NOT shown
+        self.assertNotIn(secret_value, markdown)
+        self.assertNotIn("my-actual-key", markdown)
+
     def test_report_renders_pass_warn_fail(self) -> None:
         payload = {
             "overall_status": "WARN",

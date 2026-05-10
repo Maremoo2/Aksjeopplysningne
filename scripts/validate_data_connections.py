@@ -111,8 +111,8 @@ def _check_alpaca_provider(timeout: int = 15) -> dict[str, Any]:
     check = _new_check("Alpaca provider status")
     credentials = resolve_alpaca_credentials()
     check["details"]["credential_names"] = {
-        "api_key": credentials.key_name or "missing",
-        "secret_key": credentials.secret_name or "missing",
+        "api_key_env_var": credentials.key_name or "not_configured",
+        "secret_key_env_var": credentials.secret_name or "not_configured",
     }
 
     if not credentials.is_configured:
@@ -389,6 +389,7 @@ def build_validation_payload(usa_provider: str, nordic_universe: str) -> dict[st
             alpaca_check,
             "Alpaca validation is optional when usa-data-provider is not alpaca.",
         )
+    alpaca_credential_names = alpaca_check.get("details", {}).get("credential_names", {})
     checks = [
         _check_yahoo_screeners(limit=10),
         alpaca_check,
@@ -413,6 +414,8 @@ def build_validation_payload(usa_provider: str, nordic_universe: str) -> dict[st
     return {
         "generated_at_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "overall_status": overall_status,
+        "usa_provider": usa_provider,
+        "alpaca_credential_names": alpaca_credential_names,
         "checks": checks,
         "warnings": warnings,
         "errors": errors,
@@ -421,10 +424,20 @@ def build_validation_payload(usa_provider: str, nordic_universe: str) -> dict[st
 
 
 def render_validation_markdown(payload: dict[str, Any]) -> str:
+    usa_provider = payload.get("usa_provider", "unknown")
+    cred_names = payload.get("alpaca_credential_names", {})
+    api_key_name = cred_names.get("api_key_env_var", "not_configured")
+    secret_key_name = cred_names.get("secret_key_env_var", "not_configured")
+
     lines = [
         "# Data connection validation",
         "",
         f"- Overall status: **{payload.get('overall_status', 'FAIL')}**",
+        "",
+        "## Configuration",
+        f"- USA data provider: **{usa_provider}**",
+        f"- Alpaca API key env var: `{api_key_name}`",
+        f"- Alpaca secret key env var: `{secret_key_name}`",
         "",
         "## Component status",
     ]
