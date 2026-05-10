@@ -53,6 +53,20 @@ def _new_check(name: str) -> dict[str, Any]:
     }
 
 
+def _optionalize_fail(check: dict[str, Any], message: str) -> dict[str, Any]:
+    if check.get("status") != "FAIL":
+        return check
+    converted = dict(check)
+    warnings = list(converted.get("warnings", []))
+    errors = list(converted.get("errors", []))
+    warnings.extend(errors)
+    warnings.append(message)
+    converted["warnings"] = warnings
+    converted["errors"] = []
+    converted["status"] = "WARN"
+    return converted
+
+
 def _warn(check: dict[str, Any], message: str) -> None:
     check["warnings"].append(message)
     if check["status"] == "PASS":
@@ -359,9 +373,15 @@ def _check_end_to_end_dry_run(usa_provider: str, nordic_universe: str) -> dict[s
 
 
 def build_validation_payload(usa_provider: str, nordic_universe: str) -> dict[str, Any]:
+    alpaca_check = _check_alpaca_provider()
+    if usa_provider != "alpaca":
+        alpaca_check = _optionalize_fail(
+            alpaca_check,
+            "Alpaca validation is optional when usa-data-provider is not alpaca.",
+        )
     checks = [
         _check_yahoo_screeners(limit=10),
-        _check_alpaca_provider(),
+        alpaca_check,
         _check_yahoo_fallback(),
         _check_nordic_universes(),
         _check_end_to_end_dry_run(usa_provider=usa_provider, nordic_universe=nordic_universe),
@@ -434,7 +454,18 @@ def parse_args() -> argparse.Namespace:
         choices=["large_caps", "momentum", "norway", "sweden", "denmark", "finland", "small_caps", "all"],
         help="Nordic universe selection for dry-run validation",
     )
+    parser.add_argument(
+        "--allow-fail",
+        action="store_true",
+        help="Exit with zero status even when overall validation status is FAIL",
+    )
     return parser.parse_args()
+
+
+def resolve_exit_code(overall_status: str, allow_fail: bool = False) -> int:
+    if overall_status == "FAIL" and not allow_fail:
+        return 1
+    return 0
 
 
 def main() -> None:
@@ -453,6 +484,7 @@ def main() -> None:
     print(f"Overall status: {payload['overall_status']}")
     print(f"Saved Markdown report: {md_path}")
     print(f"Saved JSON report: {json_path}")
+    raise SystemExit(resolve_exit_code(payload["overall_status"], allow_fail=args.allow_fail))
 
 
 if __name__ == "__main__":

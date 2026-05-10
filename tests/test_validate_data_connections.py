@@ -137,6 +137,52 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         self.assertIn("**WARN**", markdown)
         self.assertIn("**FAIL**", markdown)
 
+    def test_resolve_exit_code_matches_expected_status_rules(self) -> None:
+        self.assertEqual(validate_data_connections.resolve_exit_code("PASS"), 0)
+        self.assertEqual(validate_data_connections.resolve_exit_code("WARN"), 0)
+        self.assertEqual(validate_data_connections.resolve_exit_code("FAIL"), 1)
+        self.assertEqual(validate_data_connections.resolve_exit_code("FAIL", allow_fail=True), 0)
+
+    def test_non_alpaca_provider_downgrades_alpaca_failure_to_warn(self) -> None:
+        failing_alpaca = {
+            "name": "Alpaca provider status",
+            "status": "FAIL",
+            "warnings": [],
+            "errors": ["Alpaca returned no usable snapshots for sample symbols"],
+            "details": {},
+        }
+        pass_check = {"name": "PASS", "status": "PASS", "warnings": [], "errors": [], "details": {}}
+        with (
+            patch.object(validate_data_connections, "_check_yahoo_screeners", return_value=pass_check),
+            patch.object(validate_data_connections, "_check_alpaca_provider", return_value=failing_alpaca),
+            patch.object(validate_data_connections, "_check_yahoo_fallback", return_value=pass_check),
+            patch.object(validate_data_connections, "_check_nordic_universes", return_value=pass_check),
+            patch.object(validate_data_connections, "_check_end_to_end_dry_run", return_value=pass_check),
+        ):
+            payload = validate_data_connections.build_validation_payload("yahoo", "all")
+        self.assertEqual(payload["overall_status"], "WARN")
+        self.assertEqual(payload["errors"], [])
+
+    def test_alpaca_provider_keeps_alpaca_failure_as_fail(self) -> None:
+        failing_alpaca = {
+            "name": "Alpaca provider status",
+            "status": "FAIL",
+            "warnings": [],
+            "errors": ["Alpaca returned no usable snapshots for sample symbols"],
+            "details": {},
+        }
+        pass_check = {"name": "PASS", "status": "PASS", "warnings": [], "errors": [], "details": {}}
+        with (
+            patch.object(validate_data_connections, "_check_yahoo_screeners", return_value=pass_check),
+            patch.object(validate_data_connections, "_check_alpaca_provider", return_value=failing_alpaca),
+            patch.object(validate_data_connections, "_check_yahoo_fallback", return_value=pass_check),
+            patch.object(validate_data_connections, "_check_nordic_universes", return_value=pass_check),
+            patch.object(validate_data_connections, "_check_end_to_end_dry_run", return_value=pass_check),
+        ):
+            payload = validate_data_connections.build_validation_payload("alpaca", "all")
+        self.assertEqual(payload["overall_status"], "FAIL")
+        self.assertIn("Alpaca returned no usable snapshots for sample symbols", payload["errors"])
+
     def test_nordic_universe_files_have_required_columns(self) -> None:
         result = validate_data_connections._check_nordic_universes()
         self.assertNotEqual(result["status"], "FAIL")

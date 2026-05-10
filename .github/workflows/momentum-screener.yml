@@ -81,11 +81,14 @@ jobs:
           python scripts/repo_scope_check.py
 
       - name: Validate data connections
+        id: validate_data_connections
         if: ${{ github.event.inputs.validate_connections == 'true' }}
+        continue-on-error: true
         run: |
           python scripts/validate_data_connections.py --outdir reports/data_quality
 
       - name: Run selected market workflow
+        if: ${{ github.event.inputs.validate_connections != 'true' || steps.validate_data_connections.outcome == 'success' }}
         run: |
           set -euo pipefail
 
@@ -147,6 +150,7 @@ jobs:
           python performance_review.py --recommendations data/recommendation_log.csv --outdir reports/performance
 
       - name: Upload reports
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: momentum-reports
@@ -154,3 +158,7 @@ jobs:
             reports/
             data/recommendation_log.csv
           if-no-files-found: error
+
+      - name: Fail workflow on validation FAIL
+        if: ${{ github.event.inputs.validate_connections == 'true' && steps.validate_data_connections.outcome == 'failure' }}
+        run: exit 1
