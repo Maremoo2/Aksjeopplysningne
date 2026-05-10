@@ -26,6 +26,14 @@ on:
           - finland
           - small_caps
           - all
+      usa_data_provider:
+        description: "USA data provider"
+        required: false
+        default: "yahoo"
+        type: choice
+        options:
+          - yahoo
+          - alpaca
       rescan_type:
         description: "Run type"
         required: true
@@ -56,6 +64,7 @@ jobs:
     env:
       RUN_MARKET: ${{ github.event.inputs.market || 'usa' }}
       NORDIC_UNIVERSE: ${{ github.event.inputs.nordic_universe || 'large_caps' }}
+      USA_DATA_PROVIDER: ${{ github.event.inputs.usa_data_provider || 'yahoo' }}
       RUN_TYPE: ${{ github.event.inputs.rescan_type || 'open' }}
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY || secrets.ALPACA_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY || secrets.ALPACA_SECRET }}
@@ -85,7 +94,10 @@ jobs:
         if: ${{ github.event.inputs.validate_connections == 'true' }}
         continue-on-error: true
         run: |
-          python scripts/validate_data_connections.py --outdir reports/data_quality
+          python scripts/validate_data_connections.py \
+            --outdir reports/data_quality \
+            --usa-data-provider "$USA_DATA_PROVIDER" \
+            --nordic-universe "$NORDIC_UNIVERSE"
 
       - name: Run selected market workflow
         if: ${{ github.event.inputs.validate_connections != 'true' || steps.validate_data_connections.outcome == 'success' }}
@@ -104,6 +116,7 @@ jobs:
                 --market "$market" \
                 --run-type "$RUN_TYPE" \
                 --source "$source" \
+                --usa-data-provider "$USA_DATA_PROVIDER" \
                 --input "$input_path" \
                 --nordic-universe "$NORDIC_UNIVERSE" \
                 --outdir "$outdir" \
@@ -114,6 +127,7 @@ jobs:
                 --market "$market" \
                 --run-type "$RUN_TYPE" \
                 --source "$source" \
+                --usa-data-provider "$USA_DATA_PROVIDER" \
                 --limit 25 \
                 --nordic-universe "$NORDIC_UNIVERSE" \
                 --outdir "$outdir" \
@@ -158,6 +172,14 @@ jobs:
             reports/
             data/recommendation_log.csv
           if-no-files-found: error
+
+      - name: Upload data quality artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-quality-artifacts
+          path: reports/data_quality/
+          if-no-files-found: warn
 
       - name: Fail workflow on validation FAIL
         if: ${{ github.event.inputs.validate_connections == 'true' && steps.validate_data_connections.outcome == 'failure' }}

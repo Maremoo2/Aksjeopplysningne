@@ -36,6 +36,14 @@ class DataSourceBehaviorTests(unittest.TestCase):
         self.assertIn("yahoo-trending", health["unavailable_screeners"])
         self.assertIn("yahoo-most-active", health["successful_screeners"])
 
+    def test_apply_filters_excludes_ctra_stale_ticker(self) -> None:
+        entries = [
+            {"ticker": "CTRA", "exchange": "NYSE", "quote_type": "EQUITY", "price": 30, "market_cap": 1_000_000_000, "volume": 2_000_000},
+            {"ticker": "AAPL", "exchange": "NASDAQ", "quote_type": "EQUITY", "price": 200, "market_cap": 1_000_000_000_000, "volume": 10_000_000},
+        ]
+        filtered = screener.apply_filters(entries, min_price=2.0, min_market_cap=500_000_000.0, min_volume=1_000_000.0)
+        self.assertEqual([entry["ticker"] for entry in filtered], ["AAPL"])
+
     def test_load_watchlist_replaces_nvo_with_novo_b(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             watchlist_path = Path(tmp_dir) / "watchlist.csv"
@@ -64,6 +72,19 @@ class DataSourceBehaviorTests(unittest.TestCase):
 
         self.assertIsInstance(provider, YahooProvider)
         self.assertEqual(resolution, "yahoo-fallback-missing-credentials")
+
+    def test_yahoo_provider_override_works_without_alpaca_credentials(self) -> None:
+        provider, resolution = screener.resolve_usa_data_provider("usa", provider_override="yahoo", env={})
+        self.assertIsInstance(provider, YahooProvider)
+        self.assertEqual(resolution, "yahoo")
+
+    @patch.object(screener, "AlpacaProvider")
+    def test_alpaca_provider_override_uses_alpaca_credentials(self, mock_provider) -> None:
+        credentials = {"ALPACA_API_KEY": "key", "ALPACA_SECRET_KEY": "secret"}
+        provider, resolution = screener.resolve_usa_data_provider("usa", provider_override="alpaca", env=credentials)
+        self.assertEqual(provider, mock_provider.return_value)
+        self.assertEqual(resolution, "alpaca")
+        mock_provider.assert_called_once_with(api_key="key", secret_key="secret")
 
     def test_alpaca_provider_uses_data_endpoints_only(self) -> None:
         provider = AlpacaProvider(api_key="k", secret_key="s")
@@ -101,6 +122,7 @@ class DataSourceBehaviorTests(unittest.TestCase):
                 recommendation_log=str(Path(tmp_dir) / "recommendation_log.csv"),
                 nordic_universe="large_caps",
                 data_sources_config=str(Path(tmp_dir) / "data_sources.yaml"),
+                usa_data_provider="auto",
             )
 
             with (
@@ -141,6 +163,7 @@ class DataSourceBehaviorTests(unittest.TestCase):
                 recommendation_log=str(Path(tmp_dir) / "recommendation_log.csv"),
                 nordic_universe="large_caps",
                 data_sources_config=str(Path(tmp_dir) / "data_sources.yaml"),
+                usa_data_provider="auto",
             )
 
             def _assert_score_column(frame, *_args, **_kwargs):

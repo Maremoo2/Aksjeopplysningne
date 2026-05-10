@@ -151,6 +151,7 @@ class ScreenerTests(unittest.TestCase):
                         recommendation_log=str(Path(temp_dir) / "recommendation_log.csv"),
                         nordic_universe="large_caps",
                         data_sources_config=str(Path(temp_dir) / "data_sources.yaml"),
+                        usa_data_provider="auto",
                     ),
                 ),
                 patch.object(screener, "load_watchlist", return_value=[screener.WatchlistItem(ticker="AMD")]),
@@ -450,6 +451,33 @@ class ScreenerTests(unittest.TestCase):
         enriched = screener.enrich_with_intraday_assistant(frame, regime_report, [])
         self.assertNotEqual(enriched.loc[0, "next_action"], "REMOVE FROM FOCUS")
         self.assertIn(enriched.loc[0, "next_action"], {"SET BREAKOUT ALERT", "SET PULLBACK ALERT"})
+
+    def test_pullback_below_vwap_waits_for_reclaim(self) -> None:
+        action = screener._best_next_action(
+            {
+                "setup_bucket": "A2",
+                "setup": "pullback",
+                "last": 99.0,
+                "vwap": 100.0,
+                "day_change_pct": 1.2,
+                "distance_from_high_pct": -2.0,
+                "chase_risk": "Low",
+                "spread_bps": 10.0,
+            },
+            action_label="WATCH",
+            confidence_score=7,
+        )
+        self.assertEqual(action, "WAIT FOR VWAP RECLAIM")
+
+    def test_format_markdown_report_deduplicates_repeated_ticker_errors(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {"ticker": "CTRA", "error": "No intraday data", "classification": "", "score": 0, "reasons": ""},
+                {"ticker": "CTRA", "error": "No intraday data", "classification": "", "score": 0, "reasons": ""},
+            ]
+        )
+        report = screener.format_markdown_report(frame)
+        self.assertEqual(report.count("CTRA: No intraday data"), 1)
 
 
 if __name__ == "__main__":
