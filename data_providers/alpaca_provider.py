@@ -140,7 +140,7 @@ class AlpacaProvider:
         return {symbol: self._bars_to_frame(bars_by_symbol.get(symbol, [])) for symbol in symbols}
 
     def get_intraday_bars(self, symbol: str, interval: str = "1m", prepost: bool = True) -> pd.DataFrame:
-        del prepost
+        _ = prepost
         end = datetime.now(UTC)
         start = end - timedelta(days=2)
         frames = self.get_batch_bars(

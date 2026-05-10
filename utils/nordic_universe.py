@@ -32,7 +32,9 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "liquidity_tier",
 )
 
+# Yahoo's expected Copenhagen ticker for Novo Nordisk B-share is NOVO-B.CO.
 TICKER_REPLACEMENTS = {"NVO.CO": "NOVO-B.CO"}
+# Explicitly exclude stale symbols that should not be tracked in Nordic universes.
 EXCLUDED_TICKERS = {"CTRA"}
 
 
@@ -50,7 +52,7 @@ def load_nordic_universe(universe: str, watchlists_dir: Path) -> pd.DataFrame:
         frame = pd.read_csv(path).fillna("")
         missing = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
         if missing:
-            raise ValueError(f"{path} mangler kolonner: {', '.join(missing)}")
+            raise ValueError(f"{path} missing required columns: {', '.join(missing)}")
         frame = frame[list(REQUIRED_COLUMNS)].copy()
         frame["ticker"] = frame["ticker"].astype(str).str.strip().str.upper()
         frames.append(frame)

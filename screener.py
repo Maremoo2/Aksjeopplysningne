@@ -250,7 +250,7 @@ def load_watchlist(path: Path) -> list[WatchlistItem]:
         items.append(
             WatchlistItem(
                 ticker=ticker,
-                category=str(row.get("category", row.get("theme", ""))).strip(),
+                category=str(row.get("category") or row.get("theme") or "").strip(),
                 news=as_bool(row.get("news", False)),
                 sector_strength=as_bool(row.get("sector_strength", False)),
             )
