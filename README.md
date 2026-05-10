@@ -21,7 +21,7 @@ Aksjeopplysningne is a discretionary momentum-screening and trading-assistant to
 - Genererer trade-strategier (entry/breakout/stop/targets/risk/hold)
 - Genererer market regime-rapport (SPY/QQQ/SOXX/BTC/VIX + sektorstyrke)
 - Genererer kort shareable `trading_brief_YYYYMMDD_HHMM.md` i `reports/shareable/`
-- Legger til Top Focus Today, action labels, Nordnet alert-nivåer, trigger-regler og portefølje-overlap i trading brief
+- Legger til Top Focus Today, action labels, best next action, confidence score (1-10), catalyst quality, liquidity guardrails, Nordnet alert-nivåer, trigger-regler og portefølje-overlap i trading brief
 - Støtter USA-, Nordic- og global-kjøringer via GitHub Actions
 - Logger market-open anbefalinger i `data/recommendation_log.csv` og skriver snapshots/resultatrapporter i `reports/performance/`
 - Støtter midday re-scan med oppdatert fokusliste i `reports/intraday/`
@@ -162,7 +162,7 @@ En ferdig Nordic-universe ligger i `watchlists/nordic_watchlist.csv` med Yahoo-s
 ## Portfolio og journal
 
 - `config/portfolio.yaml` brukes til å flagge sektor-/tema-overlapp før nye trades tas.
-- `data/trade_journal.csv` er en enkel journal for dato, setup, entry/exit, størrelse, stop, target, resultat og om planen ble fulgt.
+- `data/trade_journal.csv` er en enkel journal for dato, setup, entry/exit, størrelse, stop, target, resultat, plan-follow, entry-type, stop-respect, action-label match og lesson learned.
 - `data/recommendation_log.csv` lagrer market-open anbefalinger, samme-dag-close og 1-ukes-resultater.
 - `python performance_review.py` oppsummerer både trade journal og anbefalingsstatistikk (win rate, snittavkastning, beste/verste markeder, setup-typer og action labels).
 

@@ -16,7 +16,7 @@ import requests
 import yfinance as yf
 from intraday_monitor import build_intraday_summary, write_intraday_report
 from market_regime import build_regime_report
-from recommendation_tracker import DEFAULT_LOG_PATH, snapshot_recommendations
+from recommendation_tracker import DEFAULT_LOG_PATH, load_recommendation_log, snapshot_recommendations
 from strategy_engine import enrich_with_strategy
 from utils.exposure import build_exposure_summary, exposure_categories_for_security
 from utils.sector_map import resolve_sector_info
@@ -30,7 +30,20 @@ A1_HARD_EXTENDED_DAY_CHANGE_THRESHOLD = 25
 A1_STRONG_CONTINUATION_DISTANCE_THRESHOLD = -1.5
 A1_STRONG_CONTINUATION_VOLUME_THRESHOLD = 3.0
 SPREAD_PENALTY_THRESHOLD_BPS = 30
+EXTREME_SPREAD_THRESHOLD_BPS = SPREAD_PENALTY_THRESHOLD_BPS * 2
 BASIS_POINTS_MULTIPLIER = 10000
+LOW_VOLUME_RATIO_THRESHOLD = 1.0
+LOW_DAY_VOLUME_THRESHOLD = 400_000
+DIFFICULT_EXECUTION_VOLUME_THRESHOLD = 800_000
+NORDIC_LIQUIDITY_SUFFIXES: tuple[str, ...] = (".OL", ".ST", ".CO", ".HE")
+NEXT_ACTIONS: tuple[str, ...] = (
+    "SET BREAKOUT ALERT",
+    "SET PULLBACK ALERT",
+    "WATCH ONLY",
+    "WAIT FOR VWAP RECLAIM",
+    "REMOVE FROM FOCUS",
+    "DO NOT CHASE",
+)
 PERSONAL_THEME_CATEGORIES: tuple[str, ...] = (
     "AI / Datacenter",
     "Semiconductors",
@@ -894,6 +907,204 @@ def _personal_theme_fit(
     return ("Poor fit", ())
 
 
+def _historical_performance_signal(
+    row: dict[str, Any] | pd.Series,
+    action_label: str,
+    recommendation_rows: list[dict[str, str]],
+) -> tuple[int, str]:
+    """Return historical edge adjustment and short label based on logged outcomes."""
+    if not recommendation_rows:
+        return (0, "no history")
+    target_classification = str(row.get("setup_bucket", row.get("classification", ""))).strip()
+    target_setup = str(row.get("setup", "")).strip()
+    target_action = str(action_label).strip()
+    relevant: list[float] = []
+    fallback: list[float] = []
+    for logged in recommendation_rows:
+        value = as_float(logged.get("result_same_day_pct"))
+        if value is None:
+            value = as_float(logged.get("result_1w_pct"))
+        if value is None:
+            continue
+        fallback.append(value)
+        if target_classification and str(logged.get("classification", "")).strip() == target_classification:
+            relevant.append(value)
+            continue
+        if target_setup and str(logged.get("setup", "")).strip() == target_setup:
+            relevant.append(value)
+            continue
+        if target_action and str(logged.get("action_label", "")).strip() == target_action:
+            relevant.append(value)
+    sample = relevant if relevant else fallback
+    if not sample:
+        return (0, "no history")
+    avg_return = sum(sample) / len(sample)
+    if avg_return >= 1.5:
+        return (2, f"history strong ({avg_return:+.2f}%)")
+    if avg_return >= 0.25:
+        return (1, f"history mild ({avg_return:+.2f}%)")
+    if avg_return <= -1.5:
+        return (-2, f"history weak ({avg_return:+.2f}%)")
+    if avg_return < 0:
+        return (-1, f"history soft ({avg_return:+.2f}%)")
+    return (0, f"history flat ({avg_return:+.2f}%)")
+
+
+def _catalyst_quality(row: dict[str, Any] | pd.Series) -> str:
+    """Classify catalyst strength as Strong/Medium/Weak/Technical only/Unknown."""
+    headlines = str(row.get("catalyst_headlines", "")).strip()
+    sentiment = str(row.get("sentiment_tag", "")).strip()
+    earnings_warning = str(row.get("earnings_warning", "")).strip()
+    has_context = any(
+        str(row.get(field, "")).strip()
+        for field in ("sources", "thematic_tags", "sector", "industry")
+    )
+    if not headlines and not has_context:
+        return "Unknown"
+    headline_count = len([part for part in headlines.split("|") if part.strip()]) if headlines else 0
+    if headline_count >= 2 and sentiment == "Positive":
+        return "Strong"
+    if headline_count >= 1 and sentiment in {"Positive", "Neutral"} and earnings_warning in {"None", "Watch", ""}:
+        return "Medium"
+    if headline_count >= 1 and sentiment == "Negative":
+        return "Weak"
+    if not headlines and has_context:
+        return "Technical only"
+    if headline_count == 1:
+        return "Weak"
+    return "Unknown"
+
+
+def _liquidity_guardrails(
+    row: dict[str, Any] | pd.Series,
+    market: str,
+) -> str:
+    """Summarize spread/volume/liquidity execution guardrails for a candidate."""
+    warnings: list[str] = []
+    spread_bps = as_float(row.get("spread_bps"))
+    volume_ratio = as_float(row.get("volume_ratio"))
+    day_volume = as_float(row.get("volume"))
+    market_cap_tier = str(row.get("market_cap_tier", "")).strip()
+    position_size_pct = as_float(row.get("position_size_pct")) or 0.0
+    ticker = str(row.get("ticker", "")).strip().upper()
+    if spread_bps is not None and spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
+        warnings.append("spread too wide")
+    if volume_ratio is not None and volume_ratio < LOW_VOLUME_RATIO_THRESHOLD:
+        warnings.append("relative volume too low")
+    if day_volume is not None and day_volume < LOW_DAY_VOLUME_THRESHOLD:
+        warnings.append("day volume too low")
+    is_nordic = _is_nordic_security(ticker, market)
+    if is_nordic and market_cap_tier == "Small":
+        warnings.append("Nordic small-cap liquidity can be weak")
+    if (
+        position_size_pct >= 0.03
+        and (
+            (spread_bps is not None and spread_bps > 25)
+            or (day_volume is not None and day_volume < DIFFICULT_EXECUTION_VOLUME_THRESHOLD)
+            or str(row.get("float_label", "")) == "Low"
+        )
+    ):
+        warnings.append("position size may be difficult to execute")
+    if not warnings:
+        return "No material liquidity/slippage guardrails triggered."
+    # dict.fromkeys keeps insertion order while removing duplicate warning phrases.
+    return "; ".join(dict.fromkeys(warnings))
+
+
+def _is_nordic_security(ticker: str, market: str) -> bool:
+    normalized_ticker = str(ticker).strip().upper()
+    if normalized_ticker:
+        return normalized_ticker.endswith(NORDIC_LIQUIDITY_SUFFIXES)
+    return str(market).strip().lower() == "nordic"
+
+
+def _confidence_score(
+    row: dict[str, Any] | pd.Series,
+    regime_report: dict[str, Any],
+    action_label: str,
+    recommendation_rows: list[dict[str, str]],
+) -> tuple[int, str]:
+    """Compute a 1-10 confidence score and compact rationale string for a ticker."""
+    score = 5
+    notes: list[str] = []
+    bucket = str(row.get("setup_bucket", row.get("classification", "")))
+    volume_ratio = as_float(row.get("volume_ratio")) or 0.0
+    last = as_float(row.get("last"))
+    vwap = as_float(row.get("vwap"))
+    distance_from_high = as_float(row.get("distance_from_high_pct")) or 0.0
+    atr_pct = as_float(row.get("atr_pct")) or 0.0
+    spread_bps = as_float(row.get("spread_bps"))
+    chase_risk = str(row.get("chase_risk", ""))
+    day_volume = as_float(row.get("volume"))
+    regime = str(regime_report.get("market_regime", "Unknown"))
+    _, sector_strength = _primary_sector_strength(_row_exposure_categories(row), regime_report)
+
+    if regime == "Risk-on":
+        score += 1
+        notes.append("risk-on regime")
+    elif regime in {"Risk-off", "Panic"}:
+        score -= 1
+        notes.append("defensive regime")
+
+    if volume_ratio >= 2:
+        score += 1
+        notes.append("strong relative volume")
+    elif volume_ratio < 1:
+        score -= 1
+        notes.append("weak relative volume")
+
+    if last is not None and vwap is not None and last > vwap:
+        score += 1
+    elif last is not None and vwap is not None:
+        score -= 1
+
+    if distance_from_high >= -2:
+        score += 1
+    elif distance_from_high <= -8:
+        score -= 1
+
+    if sector_strength == "Strong":
+        score += 1
+        notes.append("sector strong")
+    elif sector_strength == "Weak":
+        score -= 1
+        notes.append("sector weak")
+
+    if 0 < atr_pct <= 5:
+        score += 1
+    elif atr_pct >= 8:
+        score -= 1
+
+    if spread_bps is not None:
+        if spread_bps <= 15:
+            score += 1
+        elif spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
+            score -= 1
+    if day_volume is not None and day_volume < LOW_DAY_VOLUME_THRESHOLD:
+        score -= 1
+
+    if bucket == "A1":
+        score += 1
+    elif bucket == "C-list":
+        score -= 2
+    elif bucket == "A2":
+        score -= 1
+
+    if chase_risk == "High":
+        score -= 2
+    elif chase_risk == "Medium":
+        score -= 1
+    else:
+        score += 1
+
+    history_points, history_label = _historical_performance_signal(row, action_label, recommendation_rows)
+    score += history_points
+    notes.append(history_label)
+
+    clamped = max(1, min(10, score))
+    return (clamped, ", ".join(notes))
+
+
 def _action_label(
     row: dict[str, Any] | pd.Series,
     priority_score: int,
@@ -931,6 +1142,31 @@ def _action_label(
     ):
         return "BUY SETUP"
     return "WATCH"
+
+
+def _best_next_action(
+    row: dict[str, Any] | pd.Series,
+    action_label: str,
+    confidence_score: int,
+) -> str:
+    last = as_float(row.get("last"))
+    vwap = as_float(row.get("vwap"))
+    setup = str(row.get("setup", "")).strip().lower()
+    chase_risk = str(row.get("chase_risk", "")).strip()
+    spread_bps = as_float(row.get("spread_bps"))
+    if chase_risk == "High" or action_label == "DO NOT CHASE":
+        return "DO NOT CHASE"
+    if action_label == "AVOID" or confidence_score <= 2:
+        return "REMOVE FROM FOCUS"
+    if last is not None and vwap is not None and last <= vwap and confidence_score <= 5:
+        return "WAIT FOR VWAP RECLAIM"
+    if spread_bps is not None and spread_bps > EXTREME_SPREAD_THRESHOLD_BPS:
+        return "WATCH ONLY"
+    if setup == "breakout" and confidence_score >= 6:
+        return "SET BREAKOUT ALERT"
+    if setup in {"pullback", "continuation", "extended/parabolic"} and confidence_score >= 4:
+        return "SET PULLBACK ALERT"
+    return "WATCH ONLY"
 
 
 def _alert_levels(row: dict[str, Any] | pd.Series) -> dict[str, str]:
@@ -1179,6 +1415,9 @@ def enrich_with_intraday_assistant(
     df: pd.DataFrame,
     regime_report: dict[str, Any],
     portfolio_holdings: list[str],
+    *,
+    market: str = "usa",
+    recommendation_log_path: Path = DEFAULT_RECOMMENDATION_LOG_PATH,
 ) -> pd.DataFrame:
     if df.empty:
         return df
@@ -1187,6 +1426,7 @@ def enrich_with_intraday_assistant(
     concentrated_categories = {
         category for category, names in holdings_by_category.items() if len(names) >= PORTFOLIO_CONCENTRATION_WARNING_THRESHOLD
     }
+    recommendation_rows = load_recommendation_log(recommendation_log_path)
 
     extras: list[dict[str, Any]] = []
     for row in df.to_dict(orient="records"):
@@ -1195,12 +1435,21 @@ def enrich_with_intraday_assistant(
         )
         trigger_rules = _build_trigger_rules(row, regime_report)
         action_label = _action_label(row, priority_score, regime_report, personal_fit_label)
+        confidence_score, confidence_notes = _confidence_score(row, regime_report, action_label, recommendation_rows)
+        next_action = _best_next_action(row, action_label, confidence_score)
+        catalyst_quality = _catalyst_quality(row)
+        liquidity_guardrails = _liquidity_guardrails(row, market)
         alert_levels = _alert_levels(row)
         extras.append(
             {
                 "priority_score": priority_score,
                 "priority_label": _priority_label(row, priority_score),
                 "action_label": action_label,
+                "next_action": next_action,
+                "confidence_score": confidence_score,
+                "confidence_notes": confidence_notes,
+                "catalyst_quality": catalyst_quality,
+                "liquidity_guardrails": liquidity_guardrails,
                 "exposure_categories": ", ".join(categories) if categories else "None",
                 "portfolio_overlap": ", ".join(overlap) if overlap else "",
                 "personal_fit_label": personal_fit_label,
@@ -1456,6 +1705,8 @@ def format_shareable_report(
                     (
                         f"- Snapshot: {_display_text(row.get('setup_bucket'), 'n/a')} | "
                         f"priority {_display_number(row.get('priority_score'))} | "
+                        f"confidence {_display_number(row.get('confidence_score'), decimals=0, suffix='/10')} | "
+                        f"next action {_display_text(row.get('next_action'), 'WATCH ONLY')} | "
                         f"personal fit {_display_text(row.get('personal_fit_label'), 'n/a')} | "
                         f"rel vol {_display_number(row.get('volume_ratio'), decimals=1, suffix='x')} | "
                         f"VWAP {vwap_status} | "
@@ -1464,6 +1715,8 @@ def format_shareable_report(
                         f"spread {_display_number(row.get('spread_bps'), decimals=0, suffix=' bps')}"
                     ),
                     f"- Why this stock? {_display_text(row.get('why_this_stock'), 'n/a')}",
+                    f"- Catalyst quality: {_display_text(row.get('catalyst_quality'), 'Unknown')}",
+                    f"- Liquidity guardrails: {_display_text(row.get('liquidity_guardrails'), 'n/a')}",
                     (
                         f"- Nordnet alerts: pullback {_display_text(row.get('pullback_alert'), 'n/a')} | "
                         f"breakout {_display_text(row.get('breakout_alert'), 'n/a')} | "
@@ -1620,9 +1873,15 @@ def format_markdown_report(df: pd.DataFrame) -> str:
                 f"targets {row.get('target_1', 'n/a')}/{row.get('target_2', 'n/a')}"
             )
             lines.append(
+                f"  - Decision support: confidence {_display_number(row.get('confidence_score'), decimals=0, suffix='/10')} | "
+                f"next action {_display_text(row.get('next_action'), 'WATCH ONLY')} | "
+                f"catalyst {_display_text(row.get('catalyst_quality'), 'Unknown')}"
+            )
+            lines.append(
                 f"  - Risk: {row.get('risk', 'n/a')} | Chase risk: {row.get('chase_risk', 'n/a')} | "
                 f"Position size: {_display_position_size(row.get('position_size_pct'))} | Hold: {row.get('suggested_hold', 'n/a')}"
             )
+            lines.append(f"  - Liquidity guardrails: {_display_text(row.get('liquidity_guardrails'), 'n/a')}")
             lines.append(
                 f"  - Momentum detail: {row.get('reasons', '')}. Change {row.get('day_change_pct', 0)}% "
                 f"(kilde: {row.get('day_change_source', '')})."
@@ -1811,7 +2070,13 @@ def main() -> None:
         regime_report = build_regime_report()
     except Exception:
         regime_report = _build_market_regime_fallback()
-    df = enrich_with_intraday_assistant(df, regime_report, portfolio_holdings)
+    df = enrich_with_intraday_assistant(
+        df,
+        regime_report,
+        portfolio_holdings,
+        market=args.market,
+        recommendation_log_path=recommendation_log_path,
+    )
 
     run_type = args.run_type
     market = args.market

@@ -21,6 +21,11 @@ class PerformanceReviewTests(unittest.TestCase):
                 "result_pct": "6.0",
                 "result_nok": "6000",
                 "followed_plan": "true",
+                "entry_type": "pullback",
+                "stop_respected": "true",
+                "planned_action_label": "SET PULLBACK ALERT",
+                "action_label": "SET PULLBACK ALERT",
+                "lesson_learned": "Wait for reclaim before entry.",
                 "notes": "",
             },
             {
@@ -36,6 +41,11 @@ class PerformanceReviewTests(unittest.TestCase):
                 "result_pct": "-10.0",
                 "result_nok": "-4000",
                 "followed_plan": "false",
+                "entry_type": "chase",
+                "stop_respected": "false",
+                "planned_action_label": "DO NOT CHASE",
+                "action_label": "SET BREAKOUT ALERT",
+                "lesson_learned": "Do not chase strength late.",
                 "notes": "",
             },
         ]
@@ -48,6 +58,10 @@ class PerformanceReviewTests(unittest.TestCase):
         self.assertIn("Best setup type: pullback (+6.00%)", summary)
         self.assertIn("Worst setup type: extended/parabolic (-10.00%)", summary)
         self.assertIn("Plan followed rate: 50.00%", summary)
+        self.assertIn("Post-trade coaching:", summary)
+        self.assertIn("Entry style mix (chase/pullback/breakout): pullback 1, chase 1", summary)
+        self.assertIn("Stop respected rate: 50.00%", summary)
+        self.assertIn("Matched original action label: 50.00%", summary)
 
     def test_build_performance_summary_includes_recommendation_statistics(self) -> None:
         trade_rows = [
