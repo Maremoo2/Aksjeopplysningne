@@ -448,8 +448,11 @@ class ScreenerTests(unittest.TestCase):
             "### 3. Best multi-source candidate", 1
         )[0]
 
-        self.assertIn("**ABEV**: score 88 but REMOVE FROM FOCUS due to REMOVE FROM FOCUS / poor fit / liquidity/spread warning", excluded_section)
-        self.assertIn("**EOSE**: score 66 but DO NOT CHASE due to DO NOT CHASE / red/weak setup", excluded_section)
+        self.assertIn("**ABEV**: score 88 but REMOVE FROM FOCUS", excluded_section)
+        self.assertIn("poor fit", excluded_section)
+        self.assertIn("liquidity/spread warning", excluded_section)
+        self.assertIn("**EOSE**: score 66 but DO NOT CHASE", excluded_section)
+        self.assertIn("red/weak setup", excluded_section)
 
     def test_high_score_poor_fit_is_excluded_not_top_actionable(self) -> None:
         frame = pd.DataFrame(

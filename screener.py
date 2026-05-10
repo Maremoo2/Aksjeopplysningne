@@ -1178,8 +1178,8 @@ def _best_next_action(
     personal_fit_label = str(row.get("personal_fit_label", "")).strip()
     day_change_pct = as_float(row.get("day_change_pct"))
     is_red_name = day_change_pct is not None and day_change_pct < 0
-    weak_or_irrelevant_setup = bucket == "C-list" or personal_fit_label == "Poor fit" or setup == "reversal"
-    broken_setup = (
+    is_weak_or_irrelevant_setup = bucket == "C-list" or personal_fit_label == "Poor fit" or setup == "reversal"
+    is_broken_setup = (
         last is not None
         and vwap is not None
         and last <= vwap
@@ -1189,7 +1189,7 @@ def _best_next_action(
     # Extended/parabolic setups are treated as chase-risk by default.
     if chase_risk == "High" or action_label == "DO NOT CHASE" or setup == "extended/parabolic":
         return "DO NOT CHASE"
-    if confidence_score <= 2 and (weak_or_irrelevant_setup or broken_setup):
+    if confidence_score <= 2 and (is_weak_or_irrelevant_setup or is_broken_setup):
         return "REMOVE FROM FOCUS"
     if action_label == "AVOID":
         if (
@@ -1661,10 +1661,13 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
             next_action = _safe_text(row.get("next_action", ""))
             if next_action in EXCLUDED_NEXT_ACTIONS:
                 action_phrase = next_action
+                reason_labels = [label for label in reason_labels if label != next_action]
             elif next_action:
                 action_phrase = f"excluded ({next_action})"
             else:
                 action_phrase = "excluded"
+            if not reason_labels:
+                reason_labels = ["action rule"]
             lines.append(f"- **{ticker}**: score {score} but {action_phrase} due to {' / '.join(reason_labels)}")
     lines.append("")
 
