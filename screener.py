@@ -45,6 +45,14 @@ NEXT_ACTIONS: tuple[str, ...] = (
     "REMOVE FROM FOCUS",
     "DO NOT CHASE",
 )
+ACTIONABLE_NEXT_ACTIONS: tuple[str, ...] = (
+    "SET BREAKOUT ALERT",
+    "SET PULLBACK ALERT",
+    "WATCH ONLY",
+    "WAIT FOR VWAP RECLAIM",
+)
+EXCLUDED_NEXT_ACTIONS: tuple[str, ...] = ("REMOVE FROM FOCUS", "DO NOT CHASE")
+EXCLUDED_HIGH_SCORE_THRESHOLD = 60
 PERSONAL_THEME_CATEGORIES: tuple[str, ...] = (
     "AI / Datacenter",
     "Semiconductors",
@@ -765,6 +773,12 @@ def _str_col(frame: pd.DataFrame, col: str) -> pd.Series:
     return pd.Series([""] * len(frame), index=frame.index)
 
 
+def _safe_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
 def _numeric_col(frame: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
     if col in frame.columns:
         values: Any = frame[col]
@@ -1164,10 +1178,18 @@ def _best_next_action(
     personal_fit_label = str(row.get("personal_fit_label", "")).strip()
     day_change_pct = as_float(row.get("day_change_pct"))
     is_red_name = day_change_pct is not None and day_change_pct < 0
+    weak_or_irrelevant_setup = bucket == "C-list" or personal_fit_label == "Poor fit" or setup == "reversal"
+    broken_setup = (
+        last is not None
+        and vwap is not None
+        and last <= vwap
+        and confidence_score <= 2
+        and bucket != "A1"
+    )
     # Extended/parabolic setups are treated as chase-risk by default.
     if chase_risk == "High" or action_label == "DO NOT CHASE" or setup == "extended/parabolic":
         return "DO NOT CHASE"
-    if confidence_score <= 2:
+    if confidence_score <= 2 and (weak_or_irrelevant_setup or broken_setup):
         return "REMOVE FROM FOCUS"
     if action_label == "AVOID":
         if (
@@ -1538,27 +1560,57 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     else:
         has_error = pd.Series(False, index=df.index)
 
+    def _is_liquidity_or_spread_warning(row: dict[str, Any] | pd.Series) -> bool:
+        guardrails = _safe_text(row.get("liquidity_guardrails", ""))
+        spread_bps = as_float(row.get("spread_bps"))
+        return (
+            bool(guardrails)
+            and guardrails != "No material liquidity/slippage guardrails triggered."
+        ) or (spread_bps is not None and spread_bps > SPREAD_PENALTY_THRESHOLD_BPS)
+
+    def _is_red_or_weak_setup(row: dict[str, Any] | pd.Series) -> bool:
+        bucket = str(row.get("setup_bucket", row.get("classification", ""))).strip()
+        setup = str(row.get("setup", "")).strip().lower()
+        day_change = as_float(row.get("day_change_pct"))
+        reasons = str(row.get("reasons", "")).lower()
+        return (
+            bucket == "C-list"
+            or setup == "reversal"
+            or (day_change is not None and day_change < 0)
+            or "red" in reasons
+            or "weak" in reasons
+            or "lower lows" in reasons
+        )
+
+    def _exclusion_reason_labels(row: dict[str, Any] | pd.Series) -> list[str]:
+        labels: list[str] = []
+        next_action = _safe_text(row.get("next_action", ""))
+        if next_action in EXCLUDED_NEXT_ACTIONS:
+            labels.append(next_action)
+        if _safe_text(row.get("personal_fit_label", "")) == "Poor fit":
+            labels.append("poor fit")
+        if _is_liquidity_or_spread_warning(row):
+            labels.append("liquidity/spread warning")
+        if _is_red_or_weak_setup(row):
+            labels.append("red/weak setup")
+        return labels
+
+    next_action_col = _str_col(df, "next_action").str.strip()
+    excluded_for_top = pd.Series(False, index=df.index)
+    if not df.empty:
+        excluded_for_top = df.apply(lambda row: len(_exclusion_reason_labels(row)) > 0, axis=1)
+
     # ── 1. Top 5 actionable candidates ──────────────────────────────────────
     lines.append("### 1. Top 5 actionable candidates")
     lines.append("")
 
-    a1_mask = (df["setup_bucket"] == "A1") & ~has_error & ~in_do_not_chase
-    b_mask = (df["setup_bucket"] == "B-list") & ~has_error & ~in_do_not_chase
-    primary = df[a1_mask | b_mask].copy()
+    actionable_mask = next_action_col.isin(ACTIONABLE_NEXT_ACTIONS) & ~has_error & ~excluded_for_top
+    primary = df[actionable_mask].copy()
 
     if not primary.empty:
         primary = _rank_candidates(primary)
 
     top5 = primary.head(5)
-
-    # Fall back to A2 / do-not-chase if fewer than 5
-    if len(top5) < 5:
-        a2_mask = (df["setup_bucket"] == "A2") & ~has_error
-        a2_extra = df[a2_mask & ~df.index.isin(top5.index)]
-        top5 = pd.concat([top5, a2_extra.head(5 - len(top5))])
-    if len(top5) < 5:
-        dnc_extra = df[in_do_not_chase & ~has_error & ~df.index.isin(top5.index)]
-        top5 = pd.concat([top5, dnc_extra.head(5 - len(top5))])
 
     def _short_reason(reasons: str) -> str:
         tags = []
@@ -1585,8 +1637,39 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
             )
     lines.append("")
 
-    # ── 2. Best multi-source candidate ──────────────────────────────────────
-    lines.append("### 2. Best multi-source candidate")
+    # ── 2. Excluded high-score names ────────────────────────────────────────
+    lines.append("### 2. Excluded high-score names")
+    lines.append("")
+
+    score_numeric = _numeric_col(df, "score")
+    excluded_mask = (
+        (score_numeric >= EXCLUDED_HIGH_SCORE_THRESHOLD)
+        & ~has_error
+        & excluded_for_top
+        & ~df.index.isin(top5.index)
+    )
+    excluded_df = df[excluded_mask].copy()
+
+    if excluded_df.empty:
+        lines.append("- (none)")
+    else:
+        excluded_df = excluded_df.sort_values(by=["score"], ascending=[False], na_position="last")
+        for _, row in excluded_df.head(5).iterrows():
+            ticker = str(row.get("ticker", ""))
+            score = safe_int(row.get("score", 0))
+            reason_labels = _exclusion_reason_labels(row)
+            next_action = _safe_text(row.get("next_action", ""))
+            if next_action in EXCLUDED_NEXT_ACTIONS:
+                action_phrase = next_action
+            elif next_action:
+                action_phrase = f"excluded ({next_action})"
+            else:
+                action_phrase = "excluded"
+            lines.append(f"- **{ticker}**: score {score} but {action_phrase} due to {' / '.join(reason_labels)}")
+    lines.append("")
+
+    # ── 3. Best multi-source candidate ──────────────────────────────────────
+    lines.append("### 3. Best multi-source candidate")
     lines.append("")
 
     valid = df[~has_error].copy()
@@ -1601,11 +1684,11 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
         lines.append(f"- **{best.get('ticker', '')}** [{str(best.get('sources', '')).strip()}]")
     lines.append("")
 
-    # ── 3. Do-not-chase names ────────────────────────────────────────────────
-    lines.append("### 3. Do-not-chase names")
+    # ── 4. Do-not-chase names ────────────────────────────────────────────────
+    lines.append("### 4. Do-not-chase names")
     lines.append("")
 
-    dnc_df = df[in_do_not_chase]
+    dnc_df = df[in_do_not_chase | next_action_col.eq("DO NOT CHASE")]
     if dnc_df.empty:
         lines.append("- (none)")
     else:
@@ -1616,8 +1699,8 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
             lines.append(f"- **{ticker}**: {chg:+.2f}% day change, {dist_h:.2f}% from high")
     lines.append("")
 
-    # ── 4. Avoid / weak names ────────────────────────────────────────────────
-    lines.append("### 4. Avoid / weak names")
+    # ── 5. Avoid / weak names ────────────────────────────────────────────────
+    lines.append("### 5. Avoid / weak names")
     lines.append("")
 
     c_mask = (df["setup_bucket"] == "C-list") & ~has_error
@@ -1650,8 +1733,8 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
         lines.append("- (none)")
     lines.append("")
 
-    # ── 5. Paste-to-ChatGPT review prompt ────────────────────────────────────
-    lines.append("### 5. Paste-to-ChatGPT review prompt")
+    # ── 6. Paste-to-ChatGPT review prompt ────────────────────────────────────
+    lines.append("### 6. Paste-to-ChatGPT review prompt")
     lines.append("")
     lines.append("```")
     lines.append(_CHATGPT_PROMPT)

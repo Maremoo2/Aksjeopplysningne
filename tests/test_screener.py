@@ -376,6 +376,118 @@ class ScreenerTests(unittest.TestCase):
         )
         self.assertEqual(capped, 4)
 
+    def test_top_5_actionable_excludes_remove_from_focus_and_do_not_chase(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "ABEV",
+                    "score": 88,
+                    "setup_bucket": "A1",
+                    "next_action": "REMOVE FROM FOCUS",
+                    "day_change_pct": 3.1,
+                    "reasons": "above VWAP",
+                    "personal_fit_label": "Poor fit",
+                    "liquidity_guardrails": "spread too wide",
+                },
+                {
+                    "ticker": "EOSE",
+                    "score": 66,
+                    "setup_bucket": "A2",
+                    "next_action": "DO NOT CHASE",
+                    "day_change_pct": 18.0,
+                    "reasons": "extended/parabolic",
+                },
+                {
+                    "ticker": "NVDA",
+                    "score": 85,
+                    "setup_bucket": "A1",
+                    "next_action": "SET BREAKOUT ALERT",
+                    "day_change_pct": 4.5,
+                    "reasons": "above VWAP, near high, volume > 2x",
+                },
+            ]
+        )
+        in_do_not_chase = pd.Series([False, True, False], index=frame.index)
+
+        summary = "\n".join(screener.format_decision_summary(frame, in_do_not_chase))
+        top_section = summary.split("### 1. Top 5 actionable candidates", 1)[1].split(
+            "### 2. Excluded high-score names", 1
+        )[0]
+
+        self.assertNotIn("REMOVE FROM FOCUS", top_section)
+        self.assertNotIn("DO NOT CHASE", top_section)
+        self.assertIn("**NVDA**", top_section)
+
+    def test_excluded_high_score_names_render_with_reasons(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "ABEV",
+                    "score": 88,
+                    "setup_bucket": "A1",
+                    "next_action": "REMOVE FROM FOCUS",
+                    "day_change_pct": 2.0,
+                    "reasons": "above VWAP",
+                    "personal_fit_label": "Poor fit",
+                    "liquidity_guardrails": "spread too wide",
+                },
+                {
+                    "ticker": "EOSE",
+                    "score": 66,
+                    "setup_bucket": "A2",
+                    "next_action": "DO NOT CHASE",
+                    "day_change_pct": 19.0,
+                    "reasons": "extended/parabolic, weak follow-through",
+                },
+            ]
+        )
+        in_do_not_chase = pd.Series([False, True], index=frame.index)
+
+        summary = "\n".join(screener.format_decision_summary(frame, in_do_not_chase))
+        excluded_section = summary.split("### 2. Excluded high-score names", 1)[1].split(
+            "### 3. Best multi-source candidate", 1
+        )[0]
+
+        self.assertIn("**ABEV**: score 88 but REMOVE FROM FOCUS due to REMOVE FROM FOCUS / poor fit / liquidity/spread warning", excluded_section)
+        self.assertIn("**EOSE**: score 66 but DO NOT CHASE due to DO NOT CHASE / red/weak setup", excluded_section)
+
+    def test_high_score_poor_fit_is_excluded_not_top_actionable(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "POOR",
+                    "score": 83,
+                    "setup_bucket": "A1",
+                    "next_action": "WATCH ONLY",
+                    "day_change_pct": 3.5,
+                    "reasons": "above VWAP, near high",
+                    "personal_fit_label": "Poor fit",
+                },
+                {
+                    "ticker": "GOOD",
+                    "score": 82,
+                    "setup_bucket": "A1",
+                    "next_action": "SET BREAKOUT ALERT",
+                    "day_change_pct": 3.4,
+                    "reasons": "above VWAP, near high",
+                    "personal_fit_label": "Good fit",
+                },
+            ]
+        )
+        in_do_not_chase = pd.Series([False, False], index=frame.index)
+
+        summary = "\n".join(screener.format_decision_summary(frame, in_do_not_chase))
+        top_section = summary.split("### 1. Top 5 actionable candidates", 1)[1].split(
+            "### 2. Excluded high-score names", 1
+        )[0]
+        excluded_section = summary.split("### 2. Excluded high-score names", 1)[1].split(
+            "### 3. Best multi-source candidate", 1
+        )[0]
+
+        self.assertIn("**GOOD**", top_section)
+        self.assertNotIn("**POOR**", top_section)
+        self.assertIn("**POOR**: score 83 but excluded (WATCH ONLY) due to poor fit", excluded_section)
+
     def test_format_shareable_report_adds_closed_market_warning_on_weekend(self) -> None:
         frame = pd.DataFrame(
             [
@@ -448,6 +560,23 @@ class ScreenerTests(unittest.TestCase):
         enriched = screener.enrich_with_intraday_assistant(frame, regime_report, [])
         self.assertNotEqual(enriched.loc[0, "next_action"], "REMOVE FROM FOCUS")
         self.assertIn(enriched.loc[0, "next_action"], {"SET BREAKOUT ALERT", "SET PULLBACK ALERT"})
+
+    def test_liquidity_warning_alone_does_not_force_remove_from_focus(self) -> None:
+        next_action = screener._best_next_action(
+            {
+                "setup": "breakout",
+                "chase_risk": "Low",
+                "spread_bps": screener.EXTREME_SPREAD_THRESHOLD_BPS + 5,
+                "setup_bucket": "A1",
+                "personal_fit_label": "Good fit",
+                "last": 100.0,
+                "vwap": 99.0,
+                "day_change_pct": 2.5,
+            },
+            action_label="AVOID",
+            confidence_score=2,
+        )
+        self.assertEqual(next_action, "WATCH ONLY")
 
 
 if __name__ == "__main__":
