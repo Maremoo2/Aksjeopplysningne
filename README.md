@@ -22,6 +22,9 @@ Aksjeopplysningne is a discretionary momentum-screening and trading-assistant to
 - Genererer market regime-rapport (SPY/QQQ/SOXX/BTC/VIX + sektorstyrke)
 - Genererer kort shareable `trading_brief_YYYYMMDD_HHMM.md` i `reports/shareable/`
 - Legger til Top Focus Today, action labels, Nordnet alert-nivåer, trigger-regler og portefølje-overlap i trading brief
+- Støtter USA-, Nordic- og global-kjøringer via GitHub Actions
+- Logger market-open anbefalinger i `data/recommendation_log.csv` og skriver snapshots/resultatrapporter i `reports/performance/`
+- Støtter midday re-scan med oppdatert fokusliste i `reports/intraday/`
 - Leser `config/portfolio.yaml` for eksponeringsvarsler
 - Lar deg loggføre trades i `data/trade_journal.csv` og oppsummere læring med `performance_review.py`
 - Legger til egen `Do-not-chase warning` for tickere som er kraftig opp, men langt under intradag-high
@@ -42,6 +45,9 @@ python screener.py --input watchlist.csv --outdir .
 # Anbefalt daglig modus (bred dekning)
 python screener.py --source yahoo-expanded --limit 25 --outdir reports
 
+# Nordic watchlist-modus
+python screener.py --market nordic --run-type open --source watchlist --input watchlists/nordic_watchlist.csv --outdir reports/nordic
+
 # Konservativ modus (kun momentum-signaler)
 python screener.py --source yahoo-momentum --limit 25 --outdir reports
 
@@ -53,6 +59,15 @@ python strategy_engine.py --input reports/momentum_report_YYYYMMDD_HHMM.csv --ou
 
 # Market regime
 python market_regime.py --outdir reports
+
+# Oppdater anbefalingsresultater etter close
+python recommendation_tracker.py --mode same-day
+
+# Oppdater anbefalingsresultater etter ca. 5 handelsdager
+python recommendation_tracker.py --mode 1w
+
+# Midday placeholder / polling-run
+python intraday_monitor.py --input reports/usa/momentum_report_YYYYMMDD_HHMM.csv --market usa
 
 # Oppsummer trade journal
 python performance_review.py
@@ -66,8 +81,13 @@ Eksempel på output-filer:
 - `strategy_report_YYYYMMDD_HHMM.{csv,md,json}`
 - `market_regime_YYYYMMDD_HHMM.{md,json}`
 - `shareable/trading_brief_YYYYMMDD_HHMM.md`
+- `performance/recommendations_YYYYMMDD_<market>_open.{md,json}`
+- `performance/recommendation_results_YYYYMMDD.{md,json}`
+- `performance/performance_summary.{md,json}`
+- `intraday/intraday_rescan_YYYYMMDD_HHMM.{md,json}`
 - `config/portfolio.yaml`
 - `data/trade_journal.csv`
+- `data/recommendation_log.csv`
 
 A sample report with the new fields is available in `samples/sample_momentum_report.md`.
 
@@ -137,8 +157,39 @@ FTNT,cyber,false,true
 DDOG,cloud,true,true
 ```
 
+En ferdig Nordic-universe ligger i `watchlists/nordic_watchlist.csv` med Yahoo-suffikser som `.OL`, `.ST`, `.CO` og `.HE`.
+
 ## Portfolio og journal
 
 - `config/portfolio.yaml` brukes til å flagge sektor-/tema-overlapp før nye trades tas.
 - `data/trade_journal.csv` er en enkel journal for dato, setup, entry/exit, størrelse, stop, target, resultat og om planen ble fulgt.
-- `python performance_review.py` oppsummerer win rate, gjennomsnittlig gevinst/tap, beste/verste setup og tema, holdetid (når tilgjengelig) og hvor ofte planen ble fulgt.
+- `data/recommendation_log.csv` lagrer market-open anbefalinger, samme-dag-close og 1-ukes-resultater.
+- `python performance_review.py` oppsummerer både trade journal og anbefalingsstatistikk (win rate, snittavkastning, beste/verste markeder, setup-typer og action labels).
+
+## Recommendation Performance Tracking
+
+- Screeneren logger hva som ble anbefalt ved Nordic market open og USA market open.
+- Same-day resultater sjekkes etter market close via `recommendation_tracker.py --mode same-day`.
+- One-week resultater sjekkes etter omtrent 5 handelsdager via `recommendation_tracker.py --mode 1w`.
+- Disse resultatene gjør det mulig å måle om anbefalingene faktisk er nyttige over tid.
+
+Eksempel:
+
+```text
+Date: 2026-05-08
+Market: USA
+Recommended at open:
+- AMD — BUY SETUP
+- MU — WATCH
+- DDOG — WATCH
+
+Same-day result:
+- AMD: +2.1%
+- MU: +1.4%
+- DDOG: -0.6%
+
+One-week result:
+- AMD: pending
+- MU: pending
+- DDOG: pending
+```

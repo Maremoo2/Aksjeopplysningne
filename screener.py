@@ -4,16 +4,19 @@ import argparse
 import json
 import logging
 import math
+import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
 import yfinance as yf
+from intraday_monitor import build_intraday_summary, write_intraday_report
 from market_regime import build_regime_report
+from recommendation_tracker import DEFAULT_LOG_PATH, snapshot_recommendations
 from strategy_engine import enrich_with_strategy
 from utils.exposure import build_exposure_summary, exposure_categories_for_security
 from utils.sector_map import resolve_sector_info
@@ -105,6 +108,8 @@ DEFAULT_MIN_VOLUME = 1_000_000.0
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_PORTFOLIO_PATH = REPO_ROOT / "config" / "portfolio.yaml"
 DEFAULT_TRADE_JOURNAL_PATH = REPO_ROOT / "data" / "trade_journal.csv"
+DEFAULT_RECOMMENDATION_LOG_PATH = DEFAULT_LOG_PATH
+DEFAULT_PERFORMANCE_OUTPUT_DIR = REPO_ROOT / "reports" / "performance"
 PORTFOLIO_CONCENTRATION_WARNING_THRESHOLD = 2
 
 logger = logging.getLogger(__name__)
@@ -1350,14 +1355,38 @@ def format_decision_summary(df: pd.DataFrame, in_do_not_chase: pd.Series) -> lis
     return lines
 
 
+def _market_display_name(market: str) -> str:
+    labels = {"usa": "USA", "nordic": "Nordic", "global": "Global"}
+    return labels.get(str(market).strip().lower(), str(market).strip().title() or "Unknown")
+
+
+def _run_type_display_name(run_type: str) -> str:
+    return str(run_type).strip().replace("-", " ").title() or "Unknown"
+
+
+def _tracking_status_message(run_type: str) -> str:
+    if run_type == "open":
+        return "This run will be logged as market-open recommendations."
+    if run_type == "midday":
+        return "This run is an intraday re-scan and does not create a new open snapshot."
+    if run_type == "close":
+        return "This run is intended for end-of-day result checks."
+    return "This run is a manual scan and will not be auto-logged unless run at market open."
+
+
 def format_shareable_report(
     df: pd.DataFrame,
     regime_report: dict[str, Any],
     portfolio_holdings: list[str] | None = None,
+    market: str = "usa",
+    run_type: str = "manual",
+    tracking_status: str | None = None,
+    intraday_summary: dict[str, Any] | None = None,
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [f"# Trading Brief ({now})", ""]
     portfolio_holdings = portfolio_holdings or []
+    tracking_status = tracking_status or _tracking_status_message(run_type)
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
     missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}
@@ -1388,6 +1417,14 @@ def format_shareable_report(
 
     lines.extend(
         [
+            "## Run context",
+            f"- Market: {_market_display_name(market)}",
+            f"- Run type: {_run_type_display_name(run_type)}",
+            "",
+            "## Recommendation tracking",
+            f"- {tracking_status}",
+            "- Same-day and 1-week results are tracked in data/recommendation_log.csv.",
+            "",
             "## Market regime",
             f"- Market regime: {regime_report.get('market_regime', 'Unknown')}",
             f"- Momentum odds: {regime_report.get('momentum_odds', 'Unknown')}",
@@ -1449,12 +1486,48 @@ def format_shareable_report(
         lines.append("- No concentrated overlap detected.")
     lines.append("")
 
+    if run_type == "midday":
+        lines.append("## Intraday re-scan")
+        if intraday_summary:
+            lines.append("Previous focus list:")
+            previous_focus = intraday_summary.get("previous_focus", [])
+            if previous_focus:
+                for item in previous_focus:
+                    lines.append(f"- {item.get('ticker', '')}: {item.get('status', '')}")
+            else:
+                lines.append("- No open snapshot found for this market/date.")
+            lines.append("")
+            lines.append("New candidates:")
+            new_movers = intraday_summary.get("new_movers", [])
+            if new_movers:
+                for ticker in new_movers:
+                    lines.append(f"- {ticker}")
+            else:
+                lines.append("- No new candidates yet.")
+            lines.append("")
+            lines.append("Updated Nordnet alert levels:")
+            alerts = intraday_summary.get("updated_alerts", [])
+            if alerts:
+                for item in alerts:
+                    lines.append(
+                        f"- {item.get('ticker', '')}: pullback {item.get('pullback_alert', 'n/a') or 'n/a'} | "
+                        f"breakout {item.get('breakout_alert', 'n/a') or 'n/a'} | "
+                        f"risk {item.get('risk_alert', 'n/a') or 'n/a'} | "
+                        f"target {item.get('target_alert', 'n/a') or 'n/a'}"
+                    )
+            else:
+                lines.append("- No alert updates available.")
+        else:
+            lines.append("- No intraday comparison available yet.")
+        lines.append("")
+
     lines.append("## Journal reminder")
     lines.append(
         "- If a trade is taken, log ticker, entry, stop, target, result, reason, and whether the plan was followed "
         "in data/trade_journal.csv."
     )
     lines.append("- Review the journal with `python performance_review.py`.")
+    lines.append("- Review recommendation outcomes with `python recommendation_tracker.py --mode same-day` and `--mode 1w`.")
     lines.append("")
 
     return "\n".join(lines).strip() + "\n"
@@ -1633,6 +1706,28 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MIN_VOLUME,
         help=f"Minimum volum for Yahoo-filtrering (standard: {DEFAULT_MIN_VOLUME:.0f})",
     )
+    parser.add_argument(
+        "--market",
+        default="usa",
+        choices=["usa", "nordic", "global"],
+        help="Market label for reports and workflow routing",
+    )
+    parser.add_argument(
+        "--run-type",
+        default="manual",
+        choices=["open", "midday", "close", "manual"],
+        help="Run type for recommendation tracking and intraday reports",
+    )
+    parser.add_argument(
+        "--performance-outdir",
+        default=str(DEFAULT_PERFORMANCE_OUTPUT_DIR),
+        help="Output directory for recommendation/performance artifacts",
+    )
+    parser.add_argument(
+        "--recommendation-log",
+        default=str(DEFAULT_RECOMMENDATION_LOG_PATH),
+        help="Recommendation log CSV path",
+    )
     return parser.parse_args()
 
 
@@ -1640,7 +1735,10 @@ def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     args = parse_args()
     outdir = Path(args.outdir)
+    performance_outdir = Path(args.performance_outdir)
+    recommendation_log_path = Path(args.recommendation_log)
     outdir.mkdir(parents=True, exist_ok=True)
+    performance_outdir.mkdir(parents=True, exist_ok=True)
 
     source = args.source
 
@@ -1715,6 +1813,30 @@ def main() -> None:
         regime_report = _build_market_regime_fallback()
     df = enrich_with_intraday_assistant(df, regime_report, portfolio_holdings)
 
+    run_type = args.run_type
+    market = args.market
+    run_id = os.environ.get("GITHUB_RUN_ID") or f"local-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+    tracking_status = _tracking_status_message(run_type)
+    intraday_summary: dict[str, Any] | None = None
+
+    if run_type == "open" and market in {"usa", "nordic"}:
+        snapshot_recommendations(
+            df,
+            market=market,
+            run_id=run_id,
+            output_dir=performance_outdir,
+            log_path=recommendation_log_path,
+            recommendation_time=datetime.now(UTC),
+            run_type=run_type,
+        )
+    elif run_type == "midday" and market in {"usa", "nordic"}:
+        intraday_summary = build_intraday_summary(
+            df,
+            market=market,
+            log_path=recommendation_log_path,
+        )
+        write_intraday_report(intraday_summary, output_dir=REPO_ROOT / "reports" / "intraday")
+
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     csv_path = outdir / f"momentum_report_{stamp}.csv"
     md_path = outdir / f"momentum_report_{stamp}.md"
@@ -1730,7 +1852,18 @@ def main() -> None:
     shareable_dir = outdir / "shareable"
     shareable_dir.mkdir(parents=True, exist_ok=True)
     brief_path = shareable_dir / f"trading_brief_{stamp}.md"
-    brief_path.write_text(format_shareable_report(df, regime_report, portfolio_holdings), encoding="utf-8")
+    brief_path.write_text(
+        format_shareable_report(
+            df,
+            regime_report,
+            portfolio_holdings,
+            market=market,
+            run_type=run_type,
+            tracking_status=tracking_status,
+            intraday_summary=intraday_summary,
+        ),
+        encoding="utf-8",
+    )
 
     print(report)
     print(f"Saved CSV report: {csv_path}")

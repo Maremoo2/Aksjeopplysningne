@@ -145,11 +145,16 @@ class ScreenerTests(unittest.TestCase):
                         min_price=2.0,
                         min_market_cap=500_000_000.0,
                         min_volume=1_000_000.0,
+                        market="usa",
+                        run_type="open",
+                        performance_outdir=temp_dir,
+                        recommendation_log=str(Path(temp_dir) / "recommendation_log.csv"),
                     ),
                 ),
                 patch.object(screener, "load_watchlist", return_value=[screener.WatchlistItem(ticker="AMD")]),
                 patch.object(screener, "score_stock", return_value=sample_row),
                 patch.object(screener, "build_regime_report", return_value=sample_regime),
+                patch.object(screener, "snapshot_recommendations"),
                 patch.object(screener, "datetime") as mock_datetime,
             ):
                 mock_datetime.now.return_value = fake_now
@@ -158,6 +163,9 @@ class ScreenerTests(unittest.TestCase):
             brief_path = Path(temp_dir) / "shareable" / "trading_brief_20260508_1940.md"
             self.assertTrue(brief_path.exists())
             brief = brief_path.read_text(encoding="utf-8")
+            self.assertIn("Market: USA", brief)
+            self.assertIn("Run type: Open", brief)
+            self.assertIn("This run will be logged as market-open recommendations.", brief)
             self.assertIn("Market regime: Risk-on", brief)
             self.assertIn("Strong sectors: Semiconductors, AI Software, Crypto Miners", brief)
             self.assertIn("## Top Focus Today", brief)
@@ -215,6 +223,9 @@ class ScreenerTests(unittest.TestCase):
 
         brief = screener.format_shareable_report(frame, regime_report, ["IREN", "APLD", "CORE", "NVDA"])
 
+        self.assertIn("Market: USA", brief)
+        self.assertIn("Run type: Manual", brief)
+        self.assertIn("Same-day and 1-week results are tracked in data/recommendation_log.csv.", brief)
         self.assertIn("### 1. AMD — BUY SETUP", brief)
         self.assertIn("personal fit Good fit", brief)
         self.assertIn("Why this stock?", brief)
