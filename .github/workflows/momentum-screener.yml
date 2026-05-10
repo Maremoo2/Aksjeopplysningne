@@ -2,6 +2,26 @@ name: Momentum Screener
 
 on:
   workflow_dispatch:
+    inputs:
+      market:
+        description: "Market to screen"
+        required: true
+        default: "usa"
+        type: choice
+        options:
+          - usa
+          - nordic
+          - global
+      rescan_type:
+        description: "Run type"
+        required: true
+        default: "open"
+        type: choice
+        options:
+          - open
+          - midday
+          - close
+          - manual
   schedule:
     # GitHub cron uses UTC.
     # 14:45 Europe/Oslo summer time = 12:45 UTC.
@@ -11,6 +31,9 @@ on:
 jobs:
   run-screener:
     runs-on: ubuntu-latest
+    env:
+      RUN_MARKET: ${{ github.event.inputs.market || 'usa' }}
+      RUN_TYPE: ${{ github.event.inputs.rescan_type || 'open' }}
 
     steps:
       - name: Check out repository
@@ -30,30 +53,99 @@ jobs:
         run: |
           python scripts/repo_scope_check.py
 
-      - name: Run watchlist screener
+      - name: Run selected market workflow
         run: |
-          mkdir -p reports/watchlist
-          python screener.py --source watchlist --input watchlist.csv --outdir reports/watchlist
-          latest_watchlist_csv=$(ls -t reports/watchlist/momentum_report_*.csv | head -n 1)
-          python strategy_engine.py --input "$latest_watchlist_csv" --outdir reports/watchlist
+          set -euo pipefail
 
-      - name: Run Yahoo-all screener
-        run: |
-          mkdir -p reports/yahoo-all
-          python screener.py --source yahoo-all --limit 25 --outdir reports/yahoo-all
-          latest_yahoo_csv=$(ls -t reports/yahoo-all/momentum_report_*.csv | head -n 1)
-          python strategy_engine.py --input "$latest_yahoo_csv" --outdir reports/yahoo-all
-        continue-on-error: true
+          run_market() {
+            local market="$1"
+            local outdir="$2"
+            local source="$3"
+            local input_path="${4:-}"
 
-      - name: Run market regime analysis
-        run: |
-          mkdir -p reports/regime
-          python market_regime.py --outdir reports/regime
-        continue-on-error: true
+            mkdir -p "$outdir"
+            if [ -n "$input_path" ]; then
+              python screener.py \
+                --market "$market" \
+                --run-type "$RUN_TYPE" \
+                --source "$source" \
+                --input "$input_path" \
+                --outdir "$outdir" \
+                --performance-outdir reports/performance \
+                --recommendation-log data/recommendation_log.csv
+            else
+              python screener.py \
+                --market "$market" \
+                --run-type "$RUN_TYPE" \
+                --source "$source" \
+                --limit 25 \
+                --outdir "$outdir" \
+                --performance-outdir reports/performance \
+                --recommendation-log data/recommendation_log.csv
+            fi
+
+            latest_csv=$(ls -t "$outdir"/momentum_report_*.csv | head -n 1)
+            python strategy_engine.py --input "$latest_csv" --outdir "$outdir"
+          }
+
+          combine_global_brief() {
+            python - <<'PY'
+from datetime import datetime
+from pathlib import Path
+import json
+import os
+
+root = Path("reports")
+usa_shareable = sorted((root / "usa" / "shareable").glob("trading_brief_*.md"))
+nordic_shareable = sorted((root / "nordic" / "shareable").glob("trading_brief_*.md"))
+global_dir = root / "global"
+global_dir.mkdir(parents=True, exist_ok=True)
+stamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+brief_path = global_dir / f"trading_brief_global_{stamp}.md"
+json_path = global_dir / f"trading_brief_global_{stamp}.json"
+parts = ["# Global Trading Brief", "", "Market: Global", f"Run type: {os.environ.get('RUN_TYPE', 'manual').title()}"]
+payload = {"market": "GLOBAL", "generated_at": datetime.utcnow().isoformat(), "briefs": []}
+
+for label, candidates in (("USA", usa_shareable), ("Nordic", nordic_shareable)):
+    if not candidates:
+        continue
+    latest = candidates[-1]
+    text = latest.read_text(encoding="utf-8").strip()
+    parts.extend([f"## {label}", "", text, ""])
+    payload["briefs"].append({"market": label, "path": str(latest), "content": text})
+
+brief_path.write_text("\n".join(parts).strip() + "\n", encoding="utf-8")
+json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+print(f"Saved global trading brief: {brief_path}")
+print(f"Saved global trading brief JSON: {json_path}")
+PY
+          }
+
+          mkdir -p reports/performance reports/intraday reports/regime
+
+          if [ "$RUN_TYPE" = "close" ]; then
+            python recommendation_tracker.py --mode same-day --input data/recommendation_log.csv --outdir reports/performance
+            python recommendation_tracker.py --mode 1w --input data/recommendation_log.csv --outdir reports/performance
+          else
+            if [ "$RUN_MARKET" = "global" ]; then
+              run_market usa reports/usa yahoo-expanded
+              run_market nordic reports/nordic watchlist watchlists/nordic_watchlist.csv
+              combine_global_brief
+            elif [ "$RUN_MARKET" = "nordic" ]; then
+              run_market nordic reports/nordic watchlist watchlists/nordic_watchlist.csv
+            else
+              run_market usa reports/usa yahoo-expanded
+            fi
+            python market_regime.py --outdir reports/regime || true
+          fi
+
+          python performance_review.py --recommendations data/recommendation_log.csv --outdir reports/performance
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
         with:
           name: momentum-reports
-          path: reports/
+          path: |
+            reports/
+            data/recommendation_log.csv
           if-no-files-found: error

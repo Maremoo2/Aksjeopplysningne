@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import defaultdict
+import json
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from recommendation_tracker import DEFAULT_LOG_PATH, load_recommendation_log, summarize_recommendation_metrics
 from utils.exposure import exposure_categories_for_security
 
-DEFAULT_JOURNAL_PATH = Path(__file__).resolve().parent / "data" / "trade_journal.csv"
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_JOURNAL_PATH = REPO_ROOT / "data" / "trade_journal.csv"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "reports" / "performance"
 
 
 def _to_float(value: Any) -> float | None:
@@ -42,6 +46,14 @@ def _parse_date(value: str) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def _parse_context(context_text: str) -> dict[str, Any]:
+    try:
+        loaded = json.loads(context_text) if context_text else {}
+        return loaded if isinstance(loaded, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 def load_trade_journal(path: Path) -> list[dict[str, str]]:
@@ -143,17 +155,168 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _average_or_none(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return mean(values)
+
+
+def _format_metric(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.2f}%"
+
+
+def _format_rate(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}%"
+
+
+def build_recommendation_summary(recommendation_rows: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
+    metrics = summarize_recommendation_metrics(recommendation_rows)
+    same_day_by_market: dict[str, list[float]] = defaultdict(list)
+    week_by_market: dict[str, list[float]] = defaultdict(list)
+    setups: dict[str, list[float]] = defaultdict(list)
+    actions: dict[str, list[float]] = defaultdict(list)
+    classifications: dict[str, list[float]] = defaultdict(list)
+    themes: dict[str, list[float]] = defaultdict(list)
+    false_positives: Counter[str] = Counter()
+
+    for row in recommendation_rows:
+        market = str(row.get("market", "")).strip() or "Unknown"
+        same_day = _to_float(row.get("result_same_day_pct"))
+        week = _to_float(row.get("result_1w_pct"))
+        setup = str(row.get("setup", "")).strip()
+        action = str(row.get("action_label", "")).strip()
+        classification = str(row.get("classification", "")).strip()
+        context = _parse_context(str(row.get("recommendation_context", "")))
+        theme_bits = [
+            str(context.get("sector", "")).strip(),
+            str(context.get("industry", "")).strip(),
+            *[part.strip() for part in str(context.get("thematic_tags", "")).split(",") if part.strip()],
+        ]
+
+        if same_day is not None:
+            same_day_by_market[market].append(same_day)
+            if setup:
+                setups[setup].append(same_day)
+            if action:
+                actions[action].append(same_day)
+            if classification:
+                classifications[classification].append(same_day)
+            for theme in theme_bits or ["Unknown"]:
+                themes[theme].append(same_day)
+        if week is not None:
+            week_by_market[market].append(week)
+
+        if (same_day is not None and same_day < 0) or (week is not None and week < 0):
+            false_positives[f"{action or 'Unknown'} / {setup or 'Unknown'}"] += 1
+
+    best_market, worst_market = _best_and_worst(same_day_by_market)
+    best_setup, worst_setup = _best_and_worst(setups)
+    best_action, worst_action = _best_and_worst(actions)
+    best_theme, worst_theme = _best_and_worst(themes)
+
+    classification_returns = {
+        key: _average_or_none(values) for key, values in sorted(classifications.items()) if values
+    }
+    action_returns = {key: _average_or_none(values) for key, values in sorted(actions.items()) if values}
+    summary = {
+        "recommendations_logged": metrics["recommendations_logged"],
+        "same_day_win_rate": metrics["same_day_win_rate"],
+        "one_week_win_rate": metrics["one_week_win_rate"],
+        "average_same_day_return": metrics["average_same_day_return"],
+        "average_one_week_return": metrics["average_one_week_return"],
+        "best_market": best_market,
+        "worst_market": worst_market,
+        "best_setup_type": best_setup,
+        "worst_setup_type": worst_setup,
+        "best_action_label": best_action,
+        "worst_action_label": worst_action,
+        "best_sector_theme": best_theme,
+        "worst_sector_theme": worst_theme,
+        "most_common_false_positives": [
+            {"pattern": label, "count": count}
+            for label, count in false_positives.most_common(3)
+        ],
+        "average_return_by_classification": classification_returns,
+        "average_return_by_action_label": action_returns,
+    }
+
+    false_positive_text = ", ".join(
+        f"{item['pattern']} ({item['count']})" for item in summary["most_common_false_positives"]
+    ) or "n/a"
+    lines = [
+        "## Recommendation performance",
+        f"Recommendations logged: {summary['recommendations_logged']}",
+        f"Recommendation win rate same-day: {_format_rate(summary['same_day_win_rate'])}",
+        f"Recommendation win rate after 1 week: {_format_rate(summary['one_week_win_rate'])}",
+        f"Average same-day return: {_format_metric(summary['average_same_day_return'])}",
+        f"Average 1-week return: {_format_metric(summary['average_one_week_return'])}",
+        f"Best market: {best_market}",
+        f"Worst market: {worst_market}",
+        f"Best setup type: {best_setup}",
+        f"Worst setup type: {worst_setup}",
+        f"Best action label: {best_action}",
+        f"Worst action label: {worst_action}",
+        f"Best sector/theme: {best_theme}",
+        f"Worst sector/theme: {worst_theme}",
+        f"Most common false positives: {false_positive_text}",
+        "",
+        "Average return by classification:",
+    ]
+    if classification_returns:
+        for label, value in classification_returns.items():
+            lines.append(f"- {label}: {_format_metric(value)}")
+    else:
+        lines.append("- n/a")
+    lines.extend(["", "Average return by action label:"])
+    if action_returns:
+        for label, value in action_returns.items():
+            lines.append(f"- {label}: {_format_metric(value)}")
+    else:
+        lines.append("- n/a")
+    lines.append("")
+    return "\n".join(lines), summary
+
+
+def build_performance_summary(trade_rows: list[dict[str, str]], recommendation_rows: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
+    trade_summary_text = summarize_performance(trade_rows).strip()
+    recommendation_text, recommendation_summary = build_recommendation_summary(recommendation_rows)
+    full_text = "\n\n".join([trade_summary_text, recommendation_text]).strip() + "\n"
+    return (
+        full_text,
+        {
+            "trade_summary": trade_summary_text,
+            "recommendation_summary": recommendation_summary,
+        },
+    )
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Summarize trade journal performance")
+    parser = argparse.ArgumentParser(description="Summarize trade journal and recommendation performance")
     parser.add_argument("--input", default=str(DEFAULT_JOURNAL_PATH), help="Trade journal CSV path")
+    parser.add_argument("--recommendations", default=str(DEFAULT_LOG_PATH), help="Recommendation log CSV path")
+    parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_DIR), help="Output directory for summary artifacts")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    path = Path(args.input)
-    rows = load_trade_journal(path)
-    print(summarize_performance(rows))
+    trade_rows = load_trade_journal(Path(args.input))
+    recommendation_rows = load_recommendation_log(Path(args.recommendations))
+    summary_text, summary_json = build_performance_summary(trade_rows, recommendation_rows)
+
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    md_path = outdir / "performance_summary.md"
+    json_path = outdir / "performance_summary.json"
+    md_path.write_text(summary_text, encoding="utf-8")
+    json_path.write_text(json.dumps(summary_json, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(summary_text)
+    print(f"Saved performance Markdown report: {md_path}")
+    print(f"Saved performance JSON report: {json_path}")
 
 
 if __name__ == "__main__":

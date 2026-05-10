@@ -49,6 +49,49 @@ class PerformanceReviewTests(unittest.TestCase):
         self.assertIn("Worst setup type: extended/parabolic (-10.00%)", summary)
         self.assertIn("Plan followed rate: 50.00%", summary)
 
+    def test_build_performance_summary_includes_recommendation_statistics(self) -> None:
+        trade_rows = [
+            {
+                "date": "2026-05-01",
+                "ticker": "AMD",
+                "setup": "pullback",
+                "classification": "A1",
+                "result_pct": "6.0",
+                "followed_plan": "true",
+            }
+        ]
+        recommendation_rows = [
+            {
+                "market": "USA",
+                "ticker": "AMD",
+                "recommendation_context": '{"sector":"Technology","industry":"Semiconductors","thematic_tags":"AI Compute"}',
+                "setup": "breakout",
+                "classification": "A1",
+                "action_label": "BUY SETUP",
+                "result_same_day_pct": "2.1",
+                "result_1w_pct": "4.3",
+            },
+            {
+                "market": "NORDIC",
+                "ticker": "NOKIA.HE",
+                "recommendation_context": '{"sector":"Technology","industry":"Communication Equipment","thematic_tags":"Telecom"}',
+                "setup": "continuation",
+                "classification": "B-list",
+                "action_label": "WATCH",
+                "result_same_day_pct": "-1.2",
+                "result_1w_pct": "-0.8",
+            },
+        ]
+
+        summary_text, summary_json = performance_review.build_performance_summary(trade_rows, recommendation_rows)
+
+        self.assertIn("Recommendation win rate same-day: 50.00%", summary_text)
+        self.assertIn("Recommendation win rate after 1 week: 50.00%", summary_text)
+        self.assertIn("Average same-day return: +0.45%", summary_text)
+        self.assertIn("Best market: USA (+2.10%)", summary_text)
+        self.assertIn("Average return by classification:", summary_text)
+        self.assertIn("A1", summary_json["recommendation_summary"]["average_return_by_classification"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,14 @@
+ticker,category,news,sector_strength
+NHY.OL,materials,false,true
+AKRBP.OL,energy,false,true
+KOG.OL,defense,true,true
+NOD.OL,technology,true,true
+TEL.OL,telecom,false,false
+MOWI.OL,consumer,false,false
+EQNR.OL,energy,true,true
+EVO.ST,gaming,true,true
+INVE-B.ST,financials,false,true
+SAAB-B.ST,defense,true,true
+NVO.CO,healthcare,true,true
+DSV.CO,logistics,false,true
+NOKIA.HE,technology,true,true
