@@ -226,7 +226,7 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 def _watchlist_items_from_frame(df: pd.DataFrame) -> list[WatchlistItem]:
     if "ticker" not in df.columns:
-        raise ValueError("Watchlist må ha kolonnen 'ticker'")
+        raise ValueError("Watchlist must have a ticker column")
 
     items: list[WatchlistItem] = []
     seen_tickers: set[str] = set()
