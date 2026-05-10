@@ -30,6 +30,7 @@ A1_HARD_EXTENDED_DAY_CHANGE_THRESHOLD = 25
 A1_STRONG_CONTINUATION_DISTANCE_THRESHOLD = -1.5
 A1_STRONG_CONTINUATION_VOLUME_THRESHOLD = 3.0
 SPREAD_PENALTY_THRESHOLD_BPS = 30
+EXTREME_SPREAD_THRESHOLD_BPS = SPREAD_PENALTY_THRESHOLD_BPS * 2
 BASIS_POINTS_MULTIPLIER = 10000
 LOW_VOLUME_RATIO_THRESHOLD = 1.0
 LOW_DAY_VOLUME_THRESHOLD = 400_000
@@ -908,13 +909,15 @@ def _personal_theme_fit(
 
 def _historical_performance_signal(
     row: dict[str, Any] | pd.Series,
+    action_label: str,
     recommendation_rows: list[dict[str, str]],
 ) -> tuple[int, str]:
+    """Return historical edge adjustment and short label based on logged outcomes."""
     if not recommendation_rows:
         return (0, "no history")
     target_classification = str(row.get("setup_bucket", row.get("classification", ""))).strip()
     target_setup = str(row.get("setup", "")).strip()
-    target_action = str(row.get("action_label", "")).strip()
+    target_action = str(action_label).strip()
     relevant: list[float] = []
     fallback: list[float] = []
     for logged in recommendation_rows:
@@ -948,6 +951,7 @@ def _historical_performance_signal(
 
 
 def _catalyst_quality(row: dict[str, Any] | pd.Series) -> str:
+    """Classify catalyst strength as Strong/Medium/Weak/Technical only/Unknown."""
     headlines = str(row.get("catalyst_headlines", "")).strip()
     sentiment = str(row.get("sentiment_tag", "")).strip()
     earnings_warning = str(row.get("earnings_warning", "")).strip()
@@ -975,6 +979,7 @@ def _liquidity_guardrails(
     row: dict[str, Any] | pd.Series,
     market: str,
 ) -> str:
+    """Summarize spread/volume/liquidity execution guardrails for a candidate."""
     warnings: list[str] = []
     spread_bps = as_float(row.get("spread_bps"))
     volume_ratio = as_float(row.get("volume_ratio"))
@@ -988,7 +993,7 @@ def _liquidity_guardrails(
         warnings.append("relative volume too low")
     if day_volume is not None and day_volume < LOW_DAY_VOLUME_THRESHOLD:
         warnings.append("day volume too low")
-    is_nordic = str(market).strip().lower() == "nordic" or ticker.endswith(NORDIC_LIQUIDITY_SUFFIXES)
+    is_nordic = _is_nordic_security(ticker, market)
     if is_nordic and market_cap_tier == "Small":
         warnings.append("Nordic small-cap liquidity can be weak")
     if (
@@ -1002,14 +1007,24 @@ def _liquidity_guardrails(
         warnings.append("position size may be difficult to execute")
     if not warnings:
         return "No material liquidity/slippage guardrails triggered."
+    # dict.fromkeys keeps insertion order while removing duplicate warning phrases.
     return "; ".join(dict.fromkeys(warnings))
+
+
+def _is_nordic_security(ticker: str, market: str) -> bool:
+    normalized_ticker = str(ticker).strip().upper()
+    if normalized_ticker:
+        return normalized_ticker.endswith(NORDIC_LIQUIDITY_SUFFIXES)
+    return str(market).strip().lower() == "nordic"
 
 
 def _confidence_score(
     row: dict[str, Any] | pd.Series,
     regime_report: dict[str, Any],
+    action_label: str,
     recommendation_rows: list[dict[str, str]],
 ) -> tuple[int, str]:
+    """Compute a 1-10 confidence score and compact rationale string for a ticker."""
     score = 5
     notes: list[str] = []
     bucket = str(row.get("setup_bucket", row.get("classification", "")))
@@ -1020,7 +1035,7 @@ def _confidence_score(
     atr_pct = as_float(row.get("atr_pct")) or 0.0
     spread_bps = as_float(row.get("spread_bps"))
     chase_risk = str(row.get("chase_risk", ""))
-    day_volume = as_float(row.get("volume")) or 0.0
+    day_volume = as_float(row.get("volume"))
     regime = str(regime_report.get("market_regime", "Unknown"))
     _, sector_strength = _primary_sector_strength(_row_exposure_categories(row), regime_report)
 
@@ -1065,7 +1080,7 @@ def _confidence_score(
             score += 1
         elif spread_bps > SPREAD_PENALTY_THRESHOLD_BPS:
             score -= 1
-    if day_volume and day_volume < LOW_DAY_VOLUME_THRESHOLD:
+    if day_volume is not None and day_volume < LOW_DAY_VOLUME_THRESHOLD:
         score -= 1
 
     if bucket == "A1":
@@ -1082,7 +1097,7 @@ def _confidence_score(
     else:
         score += 1
 
-    history_points, history_label = _historical_performance_signal(row, recommendation_rows)
+    history_points, history_label = _historical_performance_signal(row, action_label, recommendation_rows)
     score += history_points
     notes.append(history_label)
 
@@ -1141,11 +1156,11 @@ def _best_next_action(
     spread_bps = as_float(row.get("spread_bps"))
     if chase_risk == "High" or action_label == "DO NOT CHASE":
         return "DO NOT CHASE"
-    if action_label in {"AVOID"} or confidence_score <= 2:
+    if action_label == "AVOID" or confidence_score <= 2:
         return "REMOVE FROM FOCUS"
     if last is not None and vwap is not None and last <= vwap and confidence_score <= 5:
         return "WAIT FOR VWAP RECLAIM"
-    if spread_bps is not None and spread_bps > SPREAD_PENALTY_THRESHOLD_BPS * 2:
+    if spread_bps is not None and spread_bps > EXTREME_SPREAD_THRESHOLD_BPS:
         return "WATCH ONLY"
     if setup == "breakout" and confidence_score >= 6:
         return "SET BREAKOUT ALERT"
@@ -1420,10 +1435,8 @@ def enrich_with_intraday_assistant(
         )
         trigger_rules = _build_trigger_rules(row, regime_report)
         action_label = _action_label(row, priority_score, regime_report, personal_fit_label)
-        row_for_scoring = dict(row)
-        row_for_scoring["action_label"] = action_label
-        confidence_score, confidence_notes = _confidence_score(row_for_scoring, regime_report, recommendation_rows)
-        next_action = _best_next_action(row_for_scoring, action_label, confidence_score)
+        confidence_score, confidence_notes = _confidence_score(row, regime_report, action_label, recommendation_rows)
+        next_action = _best_next_action(row, action_label, confidence_score)
         catalyst_quality = _catalyst_quality(row)
         liquidity_guardrails = _liquidity_guardrails(row, market)
         alert_levels = _alert_levels(row)
@@ -1432,7 +1445,7 @@ def enrich_with_intraday_assistant(
                 "priority_score": priority_score,
                 "priority_label": _priority_label(row, priority_score),
                 "action_label": action_label,
-                "next_action": next_action if next_action in NEXT_ACTIONS else "WATCH ONLY",
+                "next_action": next_action,
                 "confidence_score": confidence_score,
                 "confidence_notes": confidence_notes,
                 "catalyst_quality": catalyst_quality,

@@ -122,12 +122,12 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
                 followed_plan += 1
 
         entry_style = str(row.get("entry_type") or row.get("entry_style") or row.get("setup") or "").strip().lower()
-        if any(token in entry_style for token in ("chase", "chased", "fomo")):
-            entry_styles["chase"] += 1
+        if "pullback" in entry_style:
+            entry_styles["pullback"] += 1
         elif "breakout" in entry_style:
             entry_styles["breakout"] += 1
-        elif "pullback" in entry_style:
-            entry_styles["pullback"] += 1
+        elif any(token in entry_style for token in ("chase", "chased", "fomo")):
+            entry_styles["chase"] += 1
 
         stop_respected = _to_bool(row.get("stop_respected"))
         if stop_respected is not None:
@@ -147,9 +147,15 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
             if planned_action == executed_action:
                 action_match_yes += 1
 
-        lesson_text = str(row.get("lesson_learned") or row.get("lesson") or row.get("notes") or "").strip()
+        lesson_text = str(row.get("lesson_learned") or row.get("lesson") or "").strip()
         if lesson_text:
-            lesson_counter[lesson_text.split(".")[0].strip()] += 1
+            if "." in lesson_text:
+                lesson_key = lesson_text.split(".", 1)[0].strip()
+            else:
+                lesson_key = lesson_text.strip()
+            lesson_key = " ".join(lesson_key.split())
+            if lesson_key:
+                lesson_counter[lesson_key] += 1
 
         entry_date = _parse_date(str(row.get("entry_date", "")) or str(row.get("date", "")))
         exit_date = _parse_date(str(row.get("exit_date", "")))
@@ -166,7 +172,8 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
     stop_respect_rate = (stop_respected_yes / stop_respected_total * 100) if stop_respected_total else None
     action_match_rate = (action_match_yes / action_match_total * 100) if action_match_total else None
     average_hold = f"{mean(hold_days):.2f} days" if hold_days else "n/a"
-    top_lesson = lesson_counter.most_common(1)[0][0] if lesson_counter else "n/a"
+    top_lessons = lesson_counter.most_common(1)
+    top_lesson = top_lessons[0][0] if top_lessons else "n/a"
     entry_mix_bits = []
     for style in ("breakout", "pullback", "chase"):
         count = entry_styles.get(style, 0)
