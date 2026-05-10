@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -59,6 +60,11 @@ ADJACENT_THEME_KEYWORDS: tuple[str, ...] = (
     "hpc / compute infrastructure",
     "cloud",
 )
+CLOSED_MARKET_WARNING = "This is not a live intraday signal. Use only as a pre-market/watchlist preparation run."
+MARKET_HOURS_BY_MARKET: dict[str, tuple[str, int, int, int, int]] = {
+    "usa": ("America/New_York", 9, 30, 16, 0),
+    "nordic": ("Europe/Oslo", 9, 0, 16, 30),
+}
 
 # Yahoo Finance predefined screener IDs
 YAHOO_SCREENER_IDS: dict[str, str] = {
@@ -1154,11 +1160,23 @@ def _best_next_action(
     setup = str(row.get("setup", "")).strip().lower()
     chase_risk = str(row.get("chase_risk", "")).strip()
     spread_bps = as_float(row.get("spread_bps"))
-    if chase_risk == "High" or action_label == "DO NOT CHASE":
+    bucket = str(row.get("setup_bucket", row.get("classification", ""))).strip()
+    personal_fit_label = str(row.get("personal_fit_label", "")).strip()
+    day_change_pct = as_float(row.get("day_change_pct"))
+    is_red_name = day_change_pct is not None and day_change_pct < 0
+    if chase_risk == "High" or action_label == "DO NOT CHASE" or setup == "extended/parabolic":
         return "DO NOT CHASE"
-    if action_label == "AVOID" or confidence_score <= 2:
+    if confidence_score <= 2:
         return "REMOVE FROM FOCUS"
-    if last is not None and vwap is not None and last <= vwap and confidence_score <= 5:
+    if action_label == "AVOID":
+        if (
+            bucket == "C-list"
+            or personal_fit_label == "Poor fit"
+            or setup == "reversal"
+            or (last is not None and vwap is not None and last <= vwap and confidence_score <= 3)
+        ):
+            return "REMOVE FROM FOCUS"
+    if is_red_name and last is not None and vwap is not None and last <= vwap and confidence_score >= 4 and bucket != "C-list":
         return "WAIT FOR VWAP RECLAIM"
     if spread_bps is not None and spread_bps > EXTREME_SPREAD_THRESHOLD_BPS:
         return "WATCH ONLY"
@@ -1167,6 +1185,34 @@ def _best_next_action(
     if setup in {"pullback", "continuation", "extended/parabolic"} and confidence_score >= 4:
         return "SET PULLBACK ALERT"
     return "WATCH ONLY"
+
+
+def _is_red_c_list_or_reversal(row: dict[str, Any] | pd.Series) -> bool:
+    day_change_pct = as_float(row.get("day_change_pct"))
+    reasons = str(row.get("reasons", "")).strip().lower()
+    is_red_name = day_change_pct is not None and day_change_pct < 0
+    if not is_red_name:
+        is_red_name = "red" in {bit.strip() for bit in reasons.split(",") if bit.strip()}
+    setup = str(row.get("setup", "")).strip().lower()
+    setup_bucket = str(row.get("setup_bucket", row.get("classification", ""))).strip()
+    classification = str(row.get("classification", "")).strip()
+    return is_red_name and (setup == "reversal" or setup_bucket == "C-list" or classification == "C-list")
+
+
+def _apply_confidence_caps(
+    row: dict[str, Any] | pd.Series,
+    confidence_score: int,
+    action_label: str,
+    next_action: str,
+) -> int:
+    capped = confidence_score
+    if next_action == "REMOVE FROM FOCUS":
+        capped = min(capped, 6)
+    if action_label == "DO NOT CHASE":
+        capped = min(capped, 5)
+    if _is_red_c_list_or_reversal(row):
+        capped = min(capped, 4)
+    return capped
 
 
 def _alert_levels(row: dict[str, Any] | pd.Series) -> dict[str, str]:
@@ -1436,7 +1482,9 @@ def enrich_with_intraday_assistant(
         trigger_rules = _build_trigger_rules(row, regime_report)
         action_label = _action_label(row, priority_score, regime_report, personal_fit_label)
         confidence_score, confidence_notes = _confidence_score(row, regime_report, action_label, recommendation_rows)
-        next_action = _best_next_action(row, action_label, confidence_score)
+        decision_row = {**row, "personal_fit_label": personal_fit_label}
+        next_action = _best_next_action(decision_row, action_label, confidence_score)
+        confidence_score = _apply_confidence_caps(decision_row, confidence_score, action_label, next_action)
         catalyst_quality = _catalyst_quality(row)
         liquidity_guardrails = _liquidity_guardrails(row, market)
         alert_levels = _alert_levels(row)
@@ -1623,6 +1671,40 @@ def _tracking_status_message(run_type: str) -> str:
     return "This run is a manual scan and will not be auto-logged unless run at market open."
 
 
+def _market_is_open_for_market(now_utc: datetime, market: str) -> tuple[bool, bool]:
+    tz_name, open_hour, open_minute, close_hour, close_minute = MARKET_HOURS_BY_MARKET.get(
+        str(market).strip().lower(),
+        MARKET_HOURS_BY_MARKET["usa"],
+    )
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=UTC)
+    now_local = now_utc.astimezone(ZoneInfo(tz_name))
+    is_weekend = now_local.weekday() >= 5
+    if is_weekend:
+        return False, True
+    minute_of_day = now_local.hour * 60 + now_local.minute
+    open_minute_of_day = open_hour * 60 + open_minute
+    close_minute_of_day = close_hour * 60 + close_minute
+    return open_minute_of_day <= minute_of_day <= close_minute_of_day, False
+
+
+def _market_session_context(market: str) -> tuple[str, str, str | None]:
+    now_utc = datetime.now(UTC)
+    normalized_market = str(market).strip().lower()
+    if normalized_market == "global":
+        usa_open, usa_weekend = _market_is_open_for_market(now_utc, "usa")
+        nordic_open, nordic_weekend = _market_is_open_for_market(now_utc, "nordic")
+        is_open = usa_open or nordic_open
+        is_weekend = usa_weekend and nordic_weekend
+    else:
+        is_open, is_weekend = _market_is_open_for_market(now_utc, normalized_market)
+    if is_open:
+        return ("Open / Regular hours", "Live intraday session data", None)
+    if is_weekend:
+        return ("Closed / Weekend / Outside regular hours", "Latest available session data", CLOSED_MARKET_WARNING)
+    return ("Closed / Outside regular hours", "Latest available session data", CLOSED_MARKET_WARNING)
+
+
 def format_shareable_report(
     df: pd.DataFrame,
     regime_report: dict[str, Any],
@@ -1636,6 +1718,7 @@ def format_shareable_report(
     lines = [f"# Trading Brief ({now})", ""]
     portfolio_holdings = portfolio_holdings or []
     tracking_status = tracking_status or _tracking_status_message(run_type)
+    market_status, data_mode, closed_market_warning = _market_session_context(market)
     if "classification" not in df.columns:
         df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
     missing_cols = {col: 0 for col in ("day_change_pct", "distance_from_high_pct") if col not in df.columns}
@@ -1669,6 +1752,8 @@ def format_shareable_report(
             "## Run context",
             f"- Market: {_market_display_name(market)}",
             f"- Run type: {_run_type_display_name(run_type)}",
+            f"- Market status: {market_status}",
+            f"- Data mode: {data_mode}",
             "",
             "## Recommendation tracking",
             f"- {tracking_status}",
@@ -1682,6 +1767,8 @@ def format_shareable_report(
             "## Top Focus Today",
         ]
     )
+    if closed_market_warning:
+        lines.extend([f"> {closed_market_warning}", ""])
 
     ranked = df[~has_error].copy()
     if "priority_score" in ranked.columns:

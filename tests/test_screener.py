@@ -349,6 +349,102 @@ class ScreenerTests(unittest.TestCase):
         self.assertEqual(personal_fit_by_ticker["DDOG"], "Medium fit")
         self.assertEqual(personal_fit_by_ticker["KO"], "Poor fit")
 
+    def test_confidence_cap_applies_when_next_action_is_remove_from_focus(self) -> None:
+        capped = screener._apply_confidence_caps(
+            {"classification": "C-list", "day_change_pct": 1.0},
+            confidence_score=10,
+            action_label="WATCH",
+            next_action="REMOVE FROM FOCUS",
+        )
+        self.assertEqual(capped, 6)
+
+    def test_confidence_cap_applies_for_do_not_chase(self) -> None:
+        capped = screener._apply_confidence_caps(
+            {"classification": "A-list", "day_change_pct": 8.0},
+            confidence_score=9,
+            action_label="DO NOT CHASE",
+            next_action="DO NOT CHASE",
+        )
+        self.assertEqual(capped, 5)
+
+    def test_confidence_cap_applies_for_red_c_list_or_reversal(self) -> None:
+        capped = screener._apply_confidence_caps(
+            {"classification": "C-list", "setup": "reversal", "day_change_pct": -3.2, "reasons": "red, far from high"},
+            confidence_score=9,
+            action_label="WATCH",
+            next_action="WATCH ONLY",
+        )
+        self.assertEqual(capped, 4)
+
+    def test_format_shareable_report_adds_closed_market_warning_on_weekend(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "AMD",
+                    "score": 84,
+                    "classification": "A-list",
+                    "setup_bucket": "A1",
+                    "setup": "breakout",
+                    "action_label": "BUY SETUP",
+                    "next_action": "SET BREAKOUT ALERT",
+                    "confidence_score": 8,
+                    "priority_score": 61,
+                    "personal_fit_label": "Good fit",
+                    "volume_ratio": 2.4,
+                    "distance_from_high_pct": -1.2,
+                    "chase_risk": "Low",
+                    "spread_bps": 10.0,
+                    "day_change_pct": 5.1,
+                    "last": 100.0,
+                    "vwap": 99.0,
+                }
+            ]
+        )
+        regime_report = {"market_regime": "Risk-on", "momentum_odds": "Favorable", "sector_strength": {}}
+        with patch.object(screener, "datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 5, 9, 12, 0)
+            brief = screener.format_shareable_report(frame, regime_report, [], market="usa")
+        self.assertIn("Market status: Closed / Weekend / Outside regular hours", brief)
+        self.assertIn("Data mode: Latest available session data", brief)
+        self.assertIn(
+            "This is not a live intraday signal. Use only as a pre-market/watchlist preparation run.",
+            brief,
+        )
+
+    def test_high_score_relevant_name_gets_alert_not_remove(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "NVDA",
+                    "score": 84,
+                    "classification": "A-list",
+                    "setup_bucket": "A1",
+                    "setup": "breakout",
+                    "last": 100.0,
+                    "vwap": 99.0,
+                    "preferred_entry_low": 99.0,
+                    "preferred_entry_high": 100.0,
+                    "volume_ratio": 2.4,
+                    "distance_from_high_pct": -1.2,
+                    "day_change_pct": 5.1,
+                    "spread_bps": 10.0,
+                    "earnings_warning": "None",
+                    "chase_risk": "Low",
+                    "sector": "Technology",
+                    "industry": "Semiconductors",
+                    "thematic_tags": "Semiconductor, AI Compute",
+                }
+            ]
+        )
+        regime_report = {
+            "market_regime": "Risk-on",
+            "momentum_odds": "Favorable",
+            "sector_strength": {"SOXX": "Strong"},
+        }
+        enriched = screener.enrich_with_intraday_assistant(frame, regime_report, [])
+        self.assertNotEqual(enriched.loc[0, "next_action"], "REMOVE FROM FOCUS")
+        self.assertIn(enriched.loc[0, "next_action"], {"SET BREAKOUT ALERT", "SET PULLBACK ALERT"})
+
 
 if __name__ == "__main__":
     unittest.main()
