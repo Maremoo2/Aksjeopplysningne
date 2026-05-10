@@ -90,9 +90,9 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         self.assertEqual(result["status"], "FAIL")
         error_text = result["errors"][0]
         self.assertIn("HTTP 200", error_text)
-        self.assertIn("body:", error_text)
+        self.assertIn("snapshot", error_text)
         self.assertIn("http_status", result["details"])
-        self.assertIn("raw_response_snippet", result["details"])
+        self.assertIn("snapshot_count", result["details"])
 
     @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
     @patch("scripts.validate_data_connections.requests.get")
@@ -153,7 +153,13 @@ class ValidateDataConnectionsTests(unittest.TestCase):
                 }
             }
         )
+        cred_names = {"api_key_env_var": "ALPACA_API_KEY", "secret_key_env_var": "ALPACA_SECRET_KEY"}
         with (
+            patch.object(
+                validate_data_connections,
+                "_alpaca_credential_env_var_names",
+                return_value=cred_names,
+            ),
             patch.object(
                 validate_data_connections,
                 "_check_yahoo_screeners",

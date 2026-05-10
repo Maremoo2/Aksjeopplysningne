@@ -12,6 +12,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+import os
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -37,7 +39,7 @@ REQUIRED_NORDIC_COLUMNS = {"ticker", "company", "country", "exchange", "theme", 
 VALID_NORDIC_SUFFIXES = (".OL", ".ST", ".CO", ".HE")
 ALPACA_SAMPLE = ("AAPL", "MSFT", "NVDA")
 AVAILABLE_STATUS = {"PASS": 0, "WARN": 1, "FAIL": 2}
-_ALPACA_RESPONSE_BODY_SNIPPET_LENGTH = 500
+_ALPACA_ENV_VARS = ("ALPACA_API_KEY", "ALPACA_KEY", "ALPACA_SECRET_KEY", "ALPACA_SECRET")
 
 
 def _worst_status(statuses: list[str]) -> str:
@@ -107,13 +109,17 @@ def _check_yahoo_screeners(limit: int) -> dict[str, Any]:
     return check
 
 
+def _alpaca_credential_env_var_names(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return which env-var names hold Alpaca credentials (checks presence only, never reads values)."""
+    source = env if env is not None else os.environ
+    api_var = next((n for n in ("ALPACA_API_KEY", "ALPACA_KEY") if source.get(n)), "not_configured")
+    secret_var = next((n for n in ("ALPACA_SECRET_KEY", "ALPACA_SECRET") if source.get(n)), "not_configured")
+    return {"api_key_env_var": api_var, "secret_key_env_var": secret_var}
+
+
 def _check_alpaca_provider(timeout: int = 15) -> dict[str, Any]:
     check = _new_check("Alpaca provider status")
     credentials = resolve_alpaca_credentials()
-    check["details"]["credential_names"] = {
-        "api_key_env_var": credentials.key_name or "not_configured",
-        "secret_key_env_var": credentials.secret_name or "not_configured",
-    }
 
     if not credentials.is_configured:
         _warn(check, "Alpaca credentials missing, using Yahoo fallback")
@@ -138,17 +144,17 @@ def _check_alpaca_provider(timeout: int = 15) -> dict[str, Any]:
         return check
 
     http_status = response.status_code
-    raw_body = response.text[:_ALPACA_RESPONSE_BODY_SNIPPET_LENGTH]
-    check["details"]["http_status"] = http_status
-    check["details"]["raw_response_snippet"] = raw_body
-
     snapshots = payload.get("snapshots", {}) if isinstance(payload, dict) else {}
+    snapshot_count = len(snapshots)
+    check["details"]["http_status"] = http_status
+    check["details"]["snapshot_count"] = snapshot_count
+
     available = [symbol for symbol in ALPACA_SAMPLE if isinstance(snapshots.get(symbol), dict) and snapshots.get(symbol)]
     if not available:
         _fail(
             check,
             f"Alpaca returned no usable snapshots for sample symbols"
-            f" (HTTP {http_status}; body: {raw_body!r})",
+            f" (HTTP {http_status}; {snapshot_count} snapshot entries in response)",
         )
     check["details"]["available_symbols"] = available
     return check
@@ -389,7 +395,7 @@ def build_validation_payload(usa_provider: str, nordic_universe: str) -> dict[st
             alpaca_check,
             "Alpaca validation is optional when usa-data-provider is not alpaca.",
         )
-    alpaca_credential_names = alpaca_check.get("details", {}).get("credential_names", {})
+    alpaca_credential_names = _alpaca_credential_env_var_names()
     checks = [
         _check_yahoo_screeners(limit=10),
         alpaca_check,
