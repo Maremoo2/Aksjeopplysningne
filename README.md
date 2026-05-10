@@ -21,7 +21,7 @@ Aksjeopplysningne is a discretionary momentum-screening and trading-assistant to
 - Genererer trade-strategier (entry/breakout/stop/targets/risk/hold)
 - Genererer market regime-rapport (SPY/QQQ/SOXX/BTC/VIX + sektorstyrke)
 - Genererer kort shareable `trading_brief_YYYYMMDD_HHMM.md` i `reports/shareable/`
-- Legger til intraday-priority, trigger alerts og portefølje-overlap i trading brief
+- Legger til Top Focus Today, action labels, Nordnet alert-nivåer, trigger-regler og portefølje-overlap i trading brief
 - Leser `config/portfolio.yaml` for eksponeringsvarsler
 - Lar deg loggføre trades i `data/trade_journal.csv` og oppsummere læring med `performance_review.py`
 - Legger til egen `Do-not-chase warning` for tickere som er kraftig opp, men langt under intradag-high
