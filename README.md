@@ -185,6 +185,22 @@ usa_data_provider: yahoo
 - `alpaca`: bruker Alpaca for USA latest/intraday/historical bars når Alpaca-credentials er satt
 - Manglende Alpaca-credentials gir automatisk fallback til Yahoo
 - Alpaca brukes kun til markedsdata (ingen ordrelegging)
+- Yahoo brukes fortsatt til discovery/screener-lister med mindre du eksplisitt bytter provider i workflow input eller config
+
+### GitHub Actions: velg Yahoo vs Alpaca
+
+I workflow **Momentum Screener** (`.github/workflows/momentum-screener.yml`) kan du velge:
+
+- `usa_data_provider: yahoo|alpaca`
+- `market: usa|nordic|global`
+- `nordic_universe: ...|all`
+
+Eksempler:
+
+- `market=usa, usa_data_provider=yahoo`
+- `market=usa, usa_data_provider=alpaca`
+- `market=global, nordic_universe=all, usa_data_provider=yahoo`
+- `market=global, nordic_universe=all, usa_data_provider=alpaca`
 
 ## Begrensninger (Yahoo/yfinance)
 
@@ -255,3 +271,8 @@ Validation artifacts are written to `reports/data_quality/` as Markdown and JSON
 - `PASS`: all critical checks succeeded
 - `WARN`: non-critical issues (for example missing Alpaca credentials with Yahoo fallback)
 - `FAIL`: critical connection or schema incompatibility that should be fixed before relying on screener output
+
+When running **Momentum Screener** with `validate_connections=true`:
+
+- `PASS` or `WARN`: workflow continues to the main screener run
+- `FAIL`: main screener execution is stopped, but artifacts (`reports/` and `reports/data_quality/`) are still uploaded

@@ -32,6 +32,7 @@ A1_EXTENDED_DAY_CHANGE_THRESHOLD = 20
 A1_HARD_EXTENDED_DAY_CHANGE_THRESHOLD = 25
 A1_STRONG_CONTINUATION_DISTANCE_THRESHOLD = -1.5
 A1_STRONG_CONTINUATION_VOLUME_THRESHOLD = 3.0
+NEAR_HIGH_DISTANCE_THRESHOLD_PCT = -2.5
 SPREAD_PENALTY_THRESHOLD_BPS = 30
 EXTREME_SPREAD_THRESHOLD_BPS = SPREAD_PENALTY_THRESHOLD_BPS * 2
 BASIS_POINTS_MULTIPLIER = 10000
@@ -130,6 +131,8 @@ YAHOO_SCREENER_HEADERS = {
 }
 OTC_EXCHANGES = {"PNK", "OTC", "PINKMKT", "GREY", "OTCMKTS"}
 EXCLUDED_QUOTE_TYPES = {"MUTUALFUND", "ETF"}
+STALE_YAHOO_TICKERS = {"CTRA"}
+EXCLUDED_DISCOVERY_TICKERS = EXCLUDED_TICKERS | STALE_YAHOO_TICKERS
 
 DEFAULT_MIN_PRICE = 2.0
 DEFAULT_MIN_MARKET_CAP = 500_000_000.0
@@ -182,14 +185,17 @@ def resolve_usa_data_provider(
     market: str,
     config_path: Path = DEFAULT_DATA_SOURCES_CONFIG_PATH,
     env: dict[str, str] | None = None,
+    provider_override: str | None = None,
 ) -> tuple[Any, str]:
     normalized_market = str(market).strip().lower()
     yahoo_provider = YahooProvider()
     if normalized_market != "usa":
         return yahoo_provider, "yahoo"
 
-    config = load_data_sources_config(config_path)
-    provider_name = config.get("usa_data_provider", "yahoo").strip().lower() or "yahoo"
+    provider_name = (provider_override or "").strip().lower()
+    if not provider_name:
+        config = load_data_sources_config(config_path)
+        provider_name = config.get("usa_data_provider", "yahoo").strip().lower() or "yahoo"
     if provider_name not in {"yahoo", "alpaca"}:
         logger.warning("Unknown usa_data_provider '%s', falling back to Yahoo", provider_name)
         return yahoo_provider, "yahoo"
@@ -236,6 +242,20 @@ def ensure_report_defaults(df: pd.DataFrame) -> pd.DataFrame:
     if not missing:
         return df
     return df.assign(**missing)
+
+
+def summarize_ticker_errors(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Return deduplicated error messages per ticker from raw row dictionaries."""
+    summary: dict[str, set[str]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker", "")).strip().upper()
+        error = str(row.get("error", "")).strip()
+        if not ticker or not error:
+            continue
+        if ticker not in summary:
+            summary[ticker] = set()
+        summary[ticker].add(error)
+    return {ticker: sorted(errors) for ticker, errors in sorted(summary.items())}
 
 
 def log_unavailable_screener(source_key: str, exc: RuntimeError) -> None:
@@ -431,6 +451,7 @@ def write_screener_health_report(report: dict[str, Any], output_dir: Path = DEFA
         f"- Disabled screeners: {', '.join(report.get('disabled_screeners', [])) or '(none)'}",
         f"- Fallback behavior: {report.get('fallback_behavior', 'n/a')}",
         f"- Duplicate tickers removed: {report.get('duplicate_tickers_removed', 0)}",
+        f"- Stale tickers filtered: {', '.join(report.get('stale_tickers_filtered', [])) or '(none)'}",
         "",
         "## Ticker count per screener",
     ]
@@ -438,6 +459,16 @@ def write_screener_health_report(report: dict[str, Any], output_dir: Path = DEFA
     if counts:
         for screener_name, count in counts.items():
             summary_lines.append(f"- {screener_name}: {count}")
+    else:
+        summary_lines.append("- (none)")
+    failed_tickers = report.get("failed_tickers", [])
+    summary_lines.extend(["", "## Failed tickers"])
+    if failed_tickers:
+        for item in failed_tickers:
+            ticker = str(item.get("ticker", "")).strip()
+            errors = [str(err).strip() for err in item.get("errors", []) if str(err).strip()]
+            if ticker and errors:
+                summary_lines.append(f"- {ticker}: {' | '.join(errors)}")
     else:
         summary_lines.append("- (none)")
     md_path.write_text("\n".join(summary_lines).strip() + "\n", encoding="utf-8")
@@ -464,6 +495,9 @@ def apply_filters(
     filtered: list[dict[str, Any]] = []
     for entry in entries:
         ticker = entry["ticker"]
+        if ticker in EXCLUDED_DISCOVERY_TICKERS:
+            logger.debug("Skipping %s: excluded stale ticker", ticker)
+            continue
 
         if exclude_otc:
             exchange = entry.get("exchange", "")
@@ -1325,17 +1359,43 @@ def _best_next_action(
     personal_fit_label = str(row.get("personal_fit_label", "")).strip()
     day_change_pct = as_float(row.get("day_change_pct"))
     is_red_name = day_change_pct is not None and day_change_pct < 0
+    distance_from_high_pct = as_float(row.get("distance_from_high_pct"))
+    is_near_high = distance_from_high_pct is not None and distance_from_high_pct >= NEAR_HIGH_DISTANCE_THRESHOLD_PCT
+    has_positive_day_change = day_change_pct is not None and day_change_pct > 0
+    is_above_vwap = last is not None and vwap is not None and last > vwap
+    is_a1_strength = bucket == "A1" and has_positive_day_change and is_above_vwap and is_near_high
     # Extended/parabolic setups are treated as chase-risk by default.
     if chase_risk == "High" or action_label == "DO NOT CHASE" or setup == "extended/parabolic":
         return "DO NOT CHASE"
+    if is_a1_strength and setup == "breakout":
+        return "SET BREAKOUT ALERT"
+    if is_a1_strength and setup not in {"pullback", "continuation"}:
+        return "WATCH ONLY"
     if confidence_score <= 2:
         return "REMOVE FROM FOCUS"
+    if setup in {"pullback", "continuation"}:
+        if last is not None and vwap is not None and last <= vwap:
+            return "WAIT FOR VWAP RECLAIM"
+        if confidence_score >= 4:
+            return "SET PULLBACK ALERT"
+        if is_a1_strength:
+            return "WATCH ONLY"
+    if is_a1_strength and confidence_score >= 4:
+        if setup == "breakout":
+            return "SET BREAKOUT ALERT"
+        return "WATCH ONLY"
     if action_label == "AVOID":
         if (
             bucket == "C-list"
             or personal_fit_label == "Poor fit"
             or setup == "reversal"
-            or (last is not None and vwap is not None and last <= vwap and confidence_score <= 3)
+            or (
+                last is not None
+                and vwap is not None
+                and last <= vwap
+                and confidence_score <= 3
+                and not is_a1_strength
+            )
         ):
             return "REMOVE FROM FOCUS"
     is_interesting_red_reclaim = (
@@ -1352,8 +1412,6 @@ def _best_next_action(
         return "WATCH ONLY"
     if setup == "breakout" and confidence_score >= 6:
         return "SET BREAKOUT ALERT"
-    if setup in {"pullback", "continuation"} and confidence_score >= 4:
-        return "SET PULLBACK ALERT"
     return "WATCH ONLY"
 
 
@@ -2159,14 +2217,18 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     lines.append("")
 
     if "error" in df.columns:
-        error_col = df["error"].astype(str).str.strip()
-        errors = df[error_col != ""]
+        error_rows = df[df["error"].astype(str).str.strip() != ""]
+        error_records = [
+            {"ticker": str(row.get("ticker", "")), "error": str(row.get("error", ""))}
+            for _, row in error_rows.iterrows()
+        ]
+        errors = summarize_ticker_errors(error_records)
     else:
-        errors = pd.DataFrame()
-    if not errors.empty:
+        errors = {}
+    if errors:
         lines.append("## Feil")
-        for _, row in errors.iterrows():
-            lines.append(f"- {row['ticker']}: {row['error']}")
+        for ticker, ticker_errors in errors.items():
+            lines.append(f"- {ticker}: {' | '.join(ticker_errors)}")
 
     return "\n".join(lines).strip() + "\n"
 
@@ -2256,6 +2318,12 @@ def parse_args() -> argparse.Namespace:
         default=str(DEFAULT_DATA_SOURCES_CONFIG_PATH),
         help="Path to data source config file (usa_data_provider)",
     )
+    parser.add_argument(
+        "--usa-data-provider",
+        default="auto",
+        choices=["auto", "yahoo", "alpaca"],
+        help="Override USA market data provider for this run (default: auto -> config value)",
+    )
     return parser.parse_args()
 
 
@@ -2271,7 +2339,12 @@ def main() -> None:
 
     source = args.source
     screener_health: dict[str, Any] | None = None
-    market_data_provider, provider_resolution = resolve_usa_data_provider(args.market, data_sources_config_path)
+    override_usa_provider = None if args.usa_data_provider == "auto" else args.usa_data_provider
+    market_data_provider, provider_resolution = resolve_usa_data_provider(
+        args.market,
+        data_sources_config_path,
+        provider_override=override_usa_provider,
+    )
     yahoo_data_provider = YahooProvider()
 
     if source == "watchlist":
@@ -2307,12 +2380,22 @@ def main() -> None:
                 )
                 sys.exit(1)
 
+        stale_filtered = sorted(
+            {
+                str(entry.get("ticker", "")).strip().upper()
+                for entry in entries
+                if str(entry.get("ticker", "")).strip().upper() in STALE_YAHOO_TICKERS
+            }
+        )
         entries = apply_filters(
             entries,
             min_price=args.min_price,
             min_market_cap=args.min_market_cap,
             min_volume=args.min_volume,
         )
+        if screener_health is not None:
+            if stale_filtered:
+                screener_health["stale_tickers_filtered"] = stale_filtered
 
         if not entries:
             print(
@@ -2341,6 +2424,12 @@ def main() -> None:
             )
         except Exception as exc:  # pragma: no cover
             rows.append({"ticker": item.ticker, "category": item.category, "error": str(exc)})
+
+    error_summary = summarize_ticker_errors(rows)
+    if screener_health is not None and error_summary:
+        screener_health["failed_tickers"] = [
+            {"ticker": ticker, "errors": errors} for ticker, errors in error_summary.items()
+        ]
 
     df = pd.DataFrame(rows)
     df = ensure_report_defaults(df)
@@ -2417,6 +2506,8 @@ def main() -> None:
         screener_health["market"] = args.market
         screener_health["source"] = source
         screener_health["provider_resolution"] = provider_resolution
+        if override_usa_provider:
+            screener_health["requested_usa_data_provider"] = override_usa_provider
         health_md, health_json = write_screener_health_report(screener_health)
         print(f"Saved screener health report: {health_md}")
         print(f"Saved screener health JSON: {health_json}")
