@@ -1,0 +1,5 @@
+ticker,company,country,exchange,theme,liquidity_tier
+KIT.OL,Kitron,Norway,Oslo Technology,Electronics,mid
+SINCH.ST,Sinch,Sweden,Nasdaq Stockholm,Communications,mid
+DEMANT.CO,Demant,Denmark,Nasdaq Copenhagen,Healthcare,mid
+TIETO.HE,TietoEVRY,Finland,Nasdaq Helsinki,Technology,mid

@@ -1,0 +1,5 @@
+ticker,company,country,exchange,theme,liquidity_tier
+NOVO-B.CO,Novo Nordisk B,Denmark,Nasdaq Copenhagen,Healthcare,high
+DSV.CO,DSV,Denmark,Nasdaq Copenhagen,Logistics,high
+ORSTED.CO,Orsted,Denmark,Nasdaq Copenhagen,Energy Transition,mid
+CARL-B.CO,Carlsberg B,Denmark,Nasdaq Copenhagen,Consumer,mid

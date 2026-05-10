@@ -193,3 +193,26 @@ One-week result:
 - MU: pending
 - DDOG: pending
 ```
+
+## Data connection validation
+
+Use the manual workflow **Validate Data Connections** before market hours when you want a quick end-to-end health check of data providers and report pipelines.
+
+- Workflow: `.github/workflows/validate-data-connections.yml`
+- Script: `python scripts/validate_data_connections.py --outdir reports/data_quality`
+- Optional script flags:
+  - `--usa-data-provider yahoo|alpaca`
+  - `--nordic-universe large_caps|momentum|norway|sweden|denmark|finland|small_caps|all`
+
+Alpaca secrets support both conventions:
+
+- Preferred: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`
+- Backward compatible: `ALPACA_KEY`, `ALPACA_SECRET`
+
+Alpaca is used for **data only** in validation (no order/trading endpoints are called). Yahoo remains the discovery source, and Nordic universes are watchlist-based CSV files under `watchlists/`.
+
+Validation artifacts are written to `reports/data_quality/` as Markdown and JSON:
+
+- `PASS`: all critical checks succeeded
+- `WARN`: non-critical issues (for example missing Alpaca credentials with Yahoo fallback)
+- `FAIL`: critical connection or schema incompatibility that should be fixed before relying on screener output

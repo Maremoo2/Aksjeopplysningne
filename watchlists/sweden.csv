@@ -1,0 +1,5 @@
+ticker,company,country,exchange,theme,liquidity_tier
+INVE-B.ST,Investor AB B,Sweden,Nasdaq Stockholm,Financials,high
+EVO.ST,Evolution,Sweden,Nasdaq Stockholm,Gaming,high
+SAAB-B.ST,Saab B,Sweden,Nasdaq Stockholm,Defense,high
+ATCO-A.ST,Atlas Copco A,Sweden,Nasdaq Stockholm,Industrials,mid
