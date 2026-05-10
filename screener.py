@@ -374,7 +374,11 @@ def fetch_yahoo_group_with_health(
                 seen[ticker] = entry
 
     if not any_success:
-        logger.warning("All enabled Yahoo screener fetches failed; continuing with empty ticker set.")
+        all_optional = bool(enabled_sources) and all(source in OPTIONAL_YAHOO_SOURCES for source in enabled_sources)
+        if all_optional:
+            logger.info("Optional Yahoo screeners unavailable; continuing with empty ticker set.")
+        else:
+            logger.warning("All enabled Yahoo screener fetches failed; continuing with empty ticker set.")
         for err in errors[:3]:
             logger.debug("  %s", err)
 

@@ -118,7 +118,11 @@ class DataSourceBehaviorTests(unittest.TestCase):
                 patch.object(screener, "build_regime_report", return_value=screener._build_market_regime_fallback()),
                 patch.object(screener, "format_markdown_report", return_value="# Empty\n"),
                 patch.object(screener, "format_shareable_report", return_value="# Brief\n"),
-                patch.object(screener, "write_screener_health_report"),
+                patch.object(
+                    screener,
+                    "write_screener_health_report",
+                    return_value=(Path(tmp_dir) / "health.md", Path(tmp_dir) / "health.json"),
+                ),
             ):
                 screener.main()
 
