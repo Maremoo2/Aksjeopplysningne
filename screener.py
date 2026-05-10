@@ -132,6 +132,7 @@ YAHOO_SCREENER_HEADERS = {
 OTC_EXCHANGES = {"PNK", "OTC", "PINKMKT", "GREY", "OTCMKTS"}
 EXCLUDED_QUOTE_TYPES = {"MUTUALFUND", "ETF"}
 STALE_YAHOO_TICKERS = {"CTRA"}
+EXCLUDED_DISCOVERY_TICKERS = EXCLUDED_TICKERS | STALE_YAHOO_TICKERS
 
 DEFAULT_MIN_PRICE = 2.0
 DEFAULT_MIN_MARKET_CAP = 500_000_000.0
@@ -494,7 +495,7 @@ def apply_filters(
     filtered: list[dict[str, Any]] = []
     for entry in entries:
         ticker = entry["ticker"]
-        if ticker in EXCLUDED_TICKERS or ticker in STALE_YAHOO_TICKERS:
+        if ticker in EXCLUDED_DISCOVERY_TICKERS:
             logger.debug("Skipping %s: excluded stale ticker", ticker)
             continue
 
@@ -1366,12 +1367,23 @@ def _best_next_action(
     # Extended/parabolic setups are treated as chase-risk by default.
     if chase_risk == "High" or action_label == "DO NOT CHASE" or setup == "extended/parabolic":
         return "DO NOT CHASE"
-    if is_a1_strength:
-        if setup == "breakout":
-            return "SET BREAKOUT ALERT"
+    if is_a1_strength and setup == "breakout":
+        return "SET BREAKOUT ALERT"
+    if is_a1_strength and setup not in {"pullback", "continuation"}:
         return "WATCH ONLY"
     if confidence_score <= 2:
         return "REMOVE FROM FOCUS"
+    if setup in {"pullback", "continuation"}:
+        if last is not None and vwap is not None and last <= vwap:
+            return "WAIT FOR VWAP RECLAIM"
+        if confidence_score >= 4:
+            return "SET PULLBACK ALERT"
+        if is_a1_strength:
+            return "WATCH ONLY"
+    if is_a1_strength and confidence_score >= 4:
+        if setup == "breakout":
+            return "SET BREAKOUT ALERT"
+        return "WATCH ONLY"
     if action_label == "AVOID":
         if (
             bucket == "C-list"
@@ -1386,12 +1398,6 @@ def _best_next_action(
             )
         ):
             return "REMOVE FROM FOCUS"
-    if setup in {"pullback", "continuation"}:
-        if last is not None and vwap is not None and last <= vwap:
-            return "WAIT FOR VWAP RECLAIM"
-        if confidence_score >= 4:
-            return "SET PULLBACK ALERT"
-        return "WATCH ONLY"
     is_interesting_red_reclaim = (
         is_red_name
         and last is not None
