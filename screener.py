@@ -32,6 +32,7 @@ A1_EXTENDED_DAY_CHANGE_THRESHOLD = 20
 A1_HARD_EXTENDED_DAY_CHANGE_THRESHOLD = 25
 A1_STRONG_CONTINUATION_DISTANCE_THRESHOLD = -1.5
 A1_STRONG_CONTINUATION_VOLUME_THRESHOLD = 3.0
+NEAR_HIGH_DISTANCE_THRESHOLD_PCT = -2.5
 SPREAD_PENALTY_THRESHOLD_BPS = 30
 EXTREME_SPREAD_THRESHOLD_BPS = SPREAD_PENALTY_THRESHOLD_BPS * 2
 BASIS_POINTS_MULTIPLIER = 10000
@@ -243,6 +244,7 @@ def ensure_report_defaults(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize_ticker_errors(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Return deduplicated error messages per ticker from raw row dictionaries."""
     summary: dict[str, set[str]] = {}
     for row in rows:
         ticker = str(row.get("ticker", "")).strip().upper()
@@ -1357,7 +1359,7 @@ def _best_next_action(
     day_change_pct = as_float(row.get("day_change_pct"))
     is_red_name = day_change_pct is not None and day_change_pct < 0
     near_high = as_float(row.get("distance_from_high_pct"))
-    is_near_high = near_high is not None and near_high >= -2.5
+    is_near_high = near_high is not None and near_high >= NEAR_HIGH_DISTANCE_THRESHOLD_PCT
     is_green = day_change_pct is not None and day_change_pct > 0
     is_above_vwap = last is not None and vwap is not None and last > vwap
     is_a1_strength = bucket == "A1" and is_green and is_above_vwap and is_near_high
@@ -2210,7 +2212,11 @@ def format_markdown_report(df: pd.DataFrame) -> str:
 
     if "error" in df.columns:
         error_rows = df[df["error"].astype(str).str.strip() != ""]
-        errors = summarize_ticker_errors(error_rows.to_dict(orient="records"))
+        error_records = [
+            {"ticker": ticker, "error": error}
+            for ticker, error in zip(error_rows.get("ticker", pd.Series(dtype=str)), error_rows["error"], strict=False)
+        ]
+        errors = summarize_ticker_errors(error_records)
     else:
         errors = {}
     if errors:
