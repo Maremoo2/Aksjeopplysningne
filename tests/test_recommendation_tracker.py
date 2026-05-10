@@ -22,6 +22,10 @@ class RecommendationTrackerTests(unittest.TestCase):
                     "priority_score": 70,
                     "score": 84,
                     "action_label": "BUY SETUP",
+                    "next_action": "SET BREAKOUT ALERT",
+                    "confidence_score": 8,
+                    "catalyst_quality": "Strong",
+                    "liquidity_guardrails": "No material liquidity/slippage guardrails triggered.",
                     "setup_bucket": "A1",
                     "setup": "breakout",
                     "preferred_entry_high": 100.0,
@@ -86,6 +90,8 @@ class RecommendationTrackerTests(unittest.TestCase):
             self.assertEqual(len(logged_rows), 2)
             context = json.loads(logged_rows[0]["recommendation_context"])
             self.assertEqual(context["sector"], "Technology")
+            self.assertEqual(logged_rows[0]["next_action"], "SET BREAKOUT ALERT")
+            self.assertEqual(logged_rows[0]["confidence_score"], "8.00")
             self.assertEqual(logged_rows[0]["status"], "PENDING_SAME_DAY")
 
     def test_update_recommendation_results_updates_same_day_and_one_week(self) -> None:

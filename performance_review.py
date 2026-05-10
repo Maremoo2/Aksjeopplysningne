@@ -91,6 +91,12 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
     hold_days: list[float] = []
     followed_plan = 0
     followed_plan_total = 0
+    entry_styles: Counter[str] = Counter()
+    stop_respected_yes = 0
+    stop_respected_total = 0
+    action_match_yes = 0
+    action_match_total = 0
+    lesson_counter: Counter[str] = Counter()
 
     for row in closed:
         result_pct = _to_float(row.get("result_pct"))
@@ -115,6 +121,36 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
             if followed:
                 followed_plan += 1
 
+        entry_style = str(row.get("entry_type") or row.get("entry_style") or row.get("setup") or "").strip().lower()
+        if any(token in entry_style for token in ("chase", "chased", "fomo")):
+            entry_styles["chase"] += 1
+        elif "breakout" in entry_style:
+            entry_styles["breakout"] += 1
+        elif "pullback" in entry_style:
+            entry_styles["pullback"] += 1
+
+        stop_respected = _to_bool(row.get("stop_respected"))
+        if stop_respected is not None:
+            stop_respected_total += 1
+            if stop_respected:
+                stop_respected_yes += 1
+
+        planned_action = str(
+            row.get("planned_action_label")
+            or row.get("original_action_label")
+            or row.get("recommendation_action_label")
+            or ""
+        ).strip()
+        executed_action = str(row.get("action_label") or row.get("executed_action_label") or "").strip()
+        if planned_action and executed_action:
+            action_match_total += 1
+            if planned_action == executed_action:
+                action_match_yes += 1
+
+        lesson_text = str(row.get("lesson_learned") or row.get("lesson") or row.get("notes") or "").strip()
+        if lesson_text:
+            lesson_counter[lesson_text.split(".")[0].strip()] += 1
+
         entry_date = _parse_date(str(row.get("entry_date", "")) or str(row.get("date", "")))
         exit_date = _parse_date(str(row.get("exit_date", "")))
         hold_days_value = _to_float(row.get("hold_days"))
@@ -127,7 +163,16 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
     best_theme, worst_theme = _best_and_worst(themes)
     win_rate = (len(wins) / len(numeric_results) * 100) if numeric_results else 0.0
     plan_follow_rate = (followed_plan / followed_plan_total * 100) if followed_plan_total else 0.0
+    stop_respect_rate = (stop_respected_yes / stop_respected_total * 100) if stop_respected_total else None
+    action_match_rate = (action_match_yes / action_match_total * 100) if action_match_total else None
     average_hold = f"{mean(hold_days):.2f} days" if hold_days else "n/a"
+    top_lesson = lesson_counter.most_common(1)[0][0] if lesson_counter else "n/a"
+    entry_mix_bits = []
+    for style in ("breakout", "pullback", "chase"):
+        count = entry_styles.get(style, 0)
+        if count:
+            entry_mix_bits.append(f"{style} {count}")
+    entry_mix = ", ".join(entry_mix_bits) if entry_mix_bits else "n/a"
 
     lines = [
         f"Trades reviewed: {len(rows)}",
@@ -151,6 +196,13 @@ def summarize_performance(rows: list[dict[str, str]]) -> str:
         f"- {worst_setup}",
         f"- {worst_theme}",
         f"- trades where the plan was not followed {100 - plan_follow_rate:.2f}% of the time",
+        "",
+        "Post-trade coaching:",
+        f"- Plan followed: {plan_follow_rate:.2f}%",
+        f"- Entry style mix (chase/pullback/breakout): {entry_mix}",
+        f"- Stop respected rate: {_format_rate(stop_respect_rate)}",
+        f"- Matched original action label: {_format_rate(action_match_rate)}",
+        f"- Lesson learned: {top_lesson}",
     ]
     return "\n".join(lines).strip() + "\n"
 

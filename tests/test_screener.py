@@ -170,6 +170,10 @@ class ScreenerTests(unittest.TestCase):
             self.assertIn("Strong sectors: Semiconductors, AI Software, Crypto Miners", brief)
             self.assertIn("## Top Focus Today", brief)
             self.assertIn("BUY SETUP", brief)
+            self.assertIn("confidence", brief)
+            self.assertIn("next action", brief)
+            self.assertIn("Catalyst quality:", brief)
+            self.assertIn("Liquidity guardrails:", brief)
             self.assertIn("Nordnet alerts:", brief)
             self.assertIn("Why this stock?", brief)
             self.assertIn("## Journal reminder", brief)
@@ -200,6 +204,10 @@ class ScreenerTests(unittest.TestCase):
                     "priority_score": 61,
                     "priority_label": "Follow actively",
                     "action_label": "BUY SETUP",
+                    "next_action": "SET BREAKOUT ALERT",
+                    "confidence_score": 8,
+                    "catalyst_quality": "Technical only",
+                    "liquidity_guardrails": "No material liquidity/slippage guardrails triggered.",
                     "personal_fit_label": "Good fit",
                     "why_this_stock": "A1 score 84, 2.4x relative volume, above VWAP, semiconductors leadership is strong, good fit for AI / Datacenter, Semiconductors",
                     "buy_trigger": "price holds above VWAP and stays constructive around 99.00–100.00",
@@ -227,6 +235,9 @@ class ScreenerTests(unittest.TestCase):
         self.assertIn("Run type: Manual", brief)
         self.assertIn("Same-day and 1-week results are tracked in data/recommendation_log.csv.", brief)
         self.assertIn("### 1. AMD — BUY SETUP", brief)
+        self.assertIn("confidence 8/10", brief)
+        self.assertIn("next action SET BREAKOUT ALERT", brief)
+        self.assertIn("Catalyst quality: Technical only", brief)
         self.assertIn("personal fit Good fit", brief)
         self.assertIn("Why this stock?", brief)
         self.assertIn("Nordnet alerts: pullback 99.00–100.00 | breakout 101.00 | risk/stop below 94.00 | target 104.00 (stretch 107.00)", brief)
@@ -273,6 +284,11 @@ class ScreenerTests(unittest.TestCase):
         self.assertEqual(without_overlap.loc[0, "priority_score"], with_overlap.loc[0, "priority_score"])
         self.assertEqual(without_overlap.loc[0, "priority_label"], with_overlap.loc[0, "priority_label"])
         self.assertEqual(with_overlap.loc[0, "action_label"], "BUY SETUP")
+        self.assertIn(with_overlap.loc[0, "next_action"], screener.NEXT_ACTIONS)
+        self.assertGreaterEqual(with_overlap.loc[0, "confidence_score"], 1)
+        self.assertLessEqual(with_overlap.loc[0, "confidence_score"], 10)
+        self.assertTrue(with_overlap.loc[0, "catalyst_quality"])
+        self.assertTrue(with_overlap.loc[0, "liquidity_guardrails"])
         self.assertEqual(with_overlap.loc[0, "personal_fit_label"], "Good fit")
         self.assertEqual(with_overlap.loc[0, "portfolio_overlap"], "AI / Datacenter")
 

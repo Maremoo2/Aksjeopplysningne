@@ -1,1 +1,1 @@
-run_id,date,market,ticker,recommendation_time,recommendation_context,classification,action_label,setup,entry,breakout,stop,target_1,target_2,recommended_price,close_price_same_day,result_same_day_pct,close_price_1w,result_1w_pct,status,outcome_1w,notes
+run_id,date,market,ticker,recommendation_time,recommendation_context,classification,action_label,next_action,confidence_score,catalyst_quality,liquidity_guardrails,setup,entry,breakout,stop,target_1,target_2,recommended_price,close_price_same_day,result_same_day_pct,close_price_1w,result_1w_pct,status,outcome_1w,notes

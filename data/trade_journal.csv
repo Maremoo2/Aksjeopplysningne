@@ -1,1 +1,1 @@
-date,ticker,setup,classification,entry,exit,position_size,stop,target,result_pct,result_nok,followed_plan,notes
+date,ticker,setup,classification,entry,exit,position_size,stop,target,result_pct,result_nok,followed_plan,entry_type,stop_respected,planned_action_label,action_label,lesson_learned,notes

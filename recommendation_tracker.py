@@ -24,6 +24,10 @@ RECOMMENDATION_FIELDS = [
     "recommendation_context",
     "classification",
     "action_label",
+    "next_action",
+    "confidence_score",
+    "catalyst_quality",
+    "liquidity_guardrails",
     "setup",
     "entry",
     "breakout",
@@ -121,6 +125,10 @@ def _build_recommendation_context(row: dict[str, Any], market: str, run_type: st
         "thematic_tags": str(row.get("thematic_tags", "")).strip(),
         "sources": str(row.get("sources", "")).strip(),
         "priority_score": _to_float(row.get("priority_score")) or 0.0,
+        "confidence_score": _to_float(row.get("confidence_score")) or 0.0,
+        "next_action": str(row.get("next_action", "")).strip(),
+        "catalyst_quality": str(row.get("catalyst_quality", "")).strip(),
+        "liquidity_guardrails": str(row.get("liquidity_guardrails", "")).strip(),
         "why_this_stock": str(row.get("why_this_stock", "")).strip(),
     }
     return json.dumps(context, ensure_ascii=False, sort_keys=True)
@@ -152,6 +160,10 @@ def snapshot_recommendations(
                 "recommendation_context": _build_recommendation_context(row, market, run_type),
                 "classification": str(row.get("setup_bucket") or row.get("classification", "")).strip(),
                 "action_label": str(row.get("action_label", "")).strip(),
+                "next_action": str(row.get("next_action", "")).strip(),
+                "confidence_score": _format_number(row.get("confidence_score")),
+                "catalyst_quality": str(row.get("catalyst_quality", "")).strip(),
+                "liquidity_guardrails": str(row.get("liquidity_guardrails", "")).strip(),
                 "setup": str(row.get("setup", "")).strip(),
                 "entry": _format_number(row.get("preferred_entry_high") or row.get("preferred_entry_low")),
                 "breakout": _format_number(row.get("breakout_level")),
@@ -207,6 +219,8 @@ def render_recommendation_snapshot_markdown(
         for row in recommendations:
             lines.append(
                 f"- {row['ticker']} — {row['action_label']} | {row['classification']} | "
+                f"next {row.get('next_action') or 'WATCH ONLY'} | "
+                f"confidence {row.get('confidence_score') or 'n/a'}/10 | "
                 f"setup {row['setup']} | price {row['recommended_price'] or 'n/a'}"
             )
     lines.append("")
