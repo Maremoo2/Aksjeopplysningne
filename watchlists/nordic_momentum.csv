@@ -1,5 +1,5 @@
 ticker,company,country,exchange,theme,liquidity_tier
-KOG.OL,Kongsberg Gruppen,Norway,Oslo Technology,Defense,high
+KOG.OL,Kongsberg Gruppen,Norway,Oslo Børs,Defense,high
 SAAB-B.ST,Saab B,Sweden,Nasdaq Stockholm,Defense,high
 NOVO-B.CO,Novo Nordisk B,Denmark,Nasdaq Copenhagen,Healthcare,high
-NOD.OL,Nordic Semiconductor,Norway,Oslo Technology,Semiconductors,mid
+NOD.OL,Nordic Semiconductor,Norway,Oslo Børs,Semiconductors,mid

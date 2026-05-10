@@ -29,6 +29,8 @@ on:
 jobs:
   validate-data-connections:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY || secrets.ALPACA_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY || secrets.ALPACA_SECRET }}
