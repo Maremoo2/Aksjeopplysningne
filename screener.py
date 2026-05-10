@@ -1360,9 +1360,9 @@ def _best_next_action(
     is_red_name = day_change_pct is not None and day_change_pct < 0
     distance_from_high_pct = as_float(row.get("distance_from_high_pct"))
     is_near_high = distance_from_high_pct is not None and distance_from_high_pct >= NEAR_HIGH_DISTANCE_THRESHOLD_PCT
-    is_green = day_change_pct is not None and day_change_pct > 0
+    has_positive_day_change = day_change_pct is not None and day_change_pct > 0
     is_above_vwap = last is not None and vwap is not None and last > vwap
-    is_a1_strength = bucket == "A1" and is_green and is_above_vwap and is_near_high
+    is_a1_strength = bucket == "A1" and has_positive_day_change and is_above_vwap and is_near_high
     # Extended/parabolic setups are treated as chase-risk by default.
     if chase_risk == "High" or action_label == "DO NOT CHASE" or setup == "extended/parabolic":
         return "DO NOT CHASE"
@@ -2333,11 +2333,11 @@ def main() -> None:
 
     source = args.source
     screener_health: dict[str, Any] | None = None
-    requested_usa_provider = None if args.usa_data_provider == "auto" else args.usa_data_provider
+    override_usa_provider = None if args.usa_data_provider == "auto" else args.usa_data_provider
     market_data_provider, provider_resolution = resolve_usa_data_provider(
         args.market,
         data_sources_config_path,
-        provider_override=requested_usa_provider,
+        provider_override=override_usa_provider,
     )
     yahoo_data_provider = YahooProvider()
 
@@ -2500,8 +2500,8 @@ def main() -> None:
         screener_health["market"] = args.market
         screener_health["source"] = source
         screener_health["provider_resolution"] = provider_resolution
-        if requested_usa_provider:
-            screener_health["requested_usa_data_provider"] = requested_usa_provider
+        if override_usa_provider:
+            screener_health["requested_usa_data_provider"] = override_usa_provider
         health_md, health_json = write_screener_health_report(screener_health)
         print(f"Saved screener health report: {health_md}")
         print(f"Saved screener health JSON: {health_json}")
