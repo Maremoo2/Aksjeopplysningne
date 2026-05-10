@@ -238,6 +238,14 @@ def ensure_report_defaults(df: pd.DataFrame) -> pd.DataFrame:
     return df.assign(**missing)
 
 
+def log_unavailable_screener(source_key: str, exc: RuntimeError) -> None:
+    if source_key in OPTIONAL_YAHOO_SOURCES:
+        logger.debug("Optional screener %s unavailable, skipping: %s", source_key, exc)
+        return
+    logger.warning("%s unavailable, skipping", source_key)
+    logger.debug("  Detail: %s", exc)
+
+
 def _watchlist_items_from_frame(df: pd.DataFrame) -> list[WatchlistItem]:
     if "ticker" not in df.columns:
         raise ValueError("Watchlist must have a ticker column")
@@ -363,11 +371,7 @@ def fetch_yahoo_group_with_health(
             ticker_counts[source_key] = len(entries)
         except RuntimeError as exc:
             unavailable_sources.append(source_key)
-            if source_key in OPTIONAL_YAHOO_SOURCES:
-                logger.debug("Optional screener %s unavailable, skipping: %s", source_key, exc)
-            else:
-                logger.warning("%s unavailable, skipping", source_key)
-                logger.debug("  Detail: %s", exc)
+            log_unavailable_screener(source_key, exc)
             errors.append(str(exc))
             continue
 
