@@ -1,0 +1,6 @@
+ticker,company,country,exchange,theme,liquidity_tier
+NOVO-B.CO,Novo Nordisk B,Denmark,Copenhagen,Healthcare,high
+DSV.CO,DSV,Denmark,Copenhagen,Logistics,high
+MAERSK-B.CO,A.P. Moller-Maersk B,Denmark,Copenhagen,Shipping,high
+ORSTED.CO,Orsted,Denmark,Copenhagen,Renewables,mid
+COLO-B.CO,Coloplast B,Denmark,Copenhagen,Healthcare,mid

@@ -9,7 +9,7 @@ Aksjeopplysningne is a discretionary momentum-screening and trading-assistant to
 ## Hva det gjør
 
 - Leser tickere fra `watchlist.csv` eller henter live fra Yahoo Finance screeners
-- Henter intradag-data via `yfinance` (pris, volum, høy/lav, pre/after-hours når tilgjengelig)
+- Henter intradag-data via Yahoo (`yfinance`) eller valgfritt Alpaca for USA (kun data, ingen trading)
 - Regner ut momentum-score (0-100-ish) basert på enkle regler
 - Beriker hver ticker med sektor/industri/thematic tags, market-cap-tier, float-risk, ATR%, premarket gap/volume og earnings-nærhet
 - Lager enkel catalyst-hook (nyhetsheadlines + sentiment-tag) og insider-placeholder
@@ -23,6 +23,7 @@ Aksjeopplysningne is a discretionary momentum-screening and trading-assistant to
 - Genererer kort shareable `trading_brief_YYYYMMDD_HHMM.md` i `reports/shareable/`
 - Legger til Top Focus Today, action labels, best next action, confidence score (1-10), catalyst quality, liquidity guardrails, Nordnet alert-nivåer, trigger-regler og portefølje-overlap i trading brief
 - Støtter USA-, Nordic- og global-kjøringer via GitHub Actions
+- Støtter Nordic-universvalg (`large_caps`, `momentum`, land, `small_caps`, `all`) via workflow input
 - Logger market-open anbefalinger i `data/recommendation_log.csv` og skriver snapshots/resultatrapporter i `reports/performance/`
 - Støtter midday re-scan med oppdatert fokusliste i `reports/intraday/`
 - Leser `config/portfolio.yaml` for eksponeringsvarsler
@@ -46,7 +47,7 @@ python screener.py --input watchlist.csv --outdir .
 python screener.py --source yahoo-expanded --limit 25 --outdir reports
 
 # Nordic watchlist-modus
-python screener.py --market nordic --run-type open --source watchlist --input watchlists/nordic_watchlist.csv --outdir reports/nordic
+python screener.py --market nordic --run-type open --source watchlist --nordic-universe large_caps --outdir reports/nordic
 
 # Konservativ modus (kun momentum-signaler)
 python screener.py --source yahoo-momentum --limit 25 --outdir reports
@@ -102,6 +103,8 @@ A sample report with the new fields is available in `samples/sample_momentum_rep
 | `--min-price` | `2.0` | Minimum aksjekurs (Yahoo-modus) |
 | `--min-market-cap` | `500000000` | Minimum markedsverdi (Yahoo-modus) |
 | `--min-volume` | `1000000` | Minimum volum (Yahoo-modus) |
+| `--nordic-universe` | `large_caps` | Universe for Nordic/global watchlist-modus (`large_caps`, `momentum`, land, `small_caps`, `all`) |
+| `--data-sources-config` | `config/data_sources.yaml` | Konfigurasjon av USA data-provider (`yahoo`/`alpaca`) |
 
 ### Tilgjengelige kilder (`--source`)
 
@@ -110,8 +113,8 @@ A sample report with the new fields is available in `samples/sample_momentum_rep
 | Verdi | Beskrivelse |
 |---|---|
 | `watchlist` | Bruker `--input` CSV (standard) — watchlist-modus for personlige tickere |
-| `yahoo-expanded` | **Anbefalt daglig modus** — alle 10 Yahoo-screeners kombinert og deduplisert |
-| `yahoo-momentum` | **Konservativ modus** — 5 momentum-orienterte screeners (gainers, most-active, trending, unusual-volume, high-beta) |
+| `yahoo-expanded` | **Anbefalt daglig modus** — Yahoo-screeners kombinert og deduplisert (ustabile valgfrie kilder kan være deaktivert) |
+| `yahoo-momentum` | **Konservativ modus** — momentum-orienterte Yahoo-screeners (ustabile valgfrie kilder kan være deaktivert) |
 | `yahoo-all` | Alias for `yahoo-momentum` (beholdt for bakoverkompatibilitet) |
 
 #### Individuelle Yahoo-screeners
@@ -135,8 +138,8 @@ Grupperte modus viser hvilke lister hver aksje dukket opp i, f.eks.:
 - NVDA [Top Gainers, Most Active]: score 80. green, volume > 2x ...
 ```
 
-> **Merk:** Noen Yahoo predefined screener-IDer kan returnere HTTP 404. Disse hoppes over med en advarsel
-> slik at resten av kjøringen fortsetter normalt.
+> **Merk:** Noen Yahoo predefined screener-IDer kan returnere HTTP 404. Disse hoppes over slik at resten av kjøringen fortsetter normalt.
+> Helsesjekk skrives til `reports/data_quality/screener_health_YYYYMMDD_HHMM.{md,json}`.
 
 ## Watchlist-format
 
@@ -157,7 +160,43 @@ FTNT,cyber,false,true
 DDOG,cloud,true,true
 ```
 
-En ferdig Nordic-universe ligger i `watchlists/nordic_watchlist.csv` med Yahoo-suffikser som `.OL`, `.ST`, `.CO` og `.HE`.
+Nordic-univers ligger i egne filer:
+
+- `watchlists/nordic_large_caps.csv`
+- `watchlists/nordic_momentum.csv`
+- `watchlists/norway.csv`
+- `watchlists/sweden.csv`
+- `watchlists/denmark.csv`
+- `watchlists/finland.csv`
+- `watchlists/nordic_small_caps.csv`
+
+Bruk `--nordic-universe all` for å kombinere alle og deduplisere tickerne.
+
+## Data providers (USA)
+
+Discovery-listene for USA hentes fortsatt fra Yahoo-screeners. Pris/volum-bars kan styres via `config/data_sources.yaml`:
+
+```yaml
+usa_data_provider: yahoo
+# allowed: yahoo, alpaca
+```
+
+- `yahoo`: bruker Yahoo/yfinance som før
+- `alpaca`: bruker Alpaca for USA latest/intraday/historical bars når `ALPACA_API_KEY` og `ALPACA_SECRET_KEY` er satt
+- Manglende Alpaca-credentials gir automatisk fallback til Yahoo
+- Alpaca brukes kun til markedsdata (ingen ordrelegging)
+
+## Begrensninger (Yahoo/yfinance)
+
+- Yahoo/yfinance er uoffisielt og kan endre seg eller bli rate-limitet.
+- Enkelte predefined screener-IDer kan bli utilgjengelige over tid.
+- Premarket/after-hours-data kan være ufullstendig.
+
+## Legg til flere nordiske tickere
+
+1. Legg ticker i en av filene i `watchlists/` med kolonnene `ticker,company,country,exchange,theme,liquidity_tier`.
+2. Kjør med ønsket `--nordic-universe`.
+3. Bruk `all` for kombinert og deduplisert univers.
 
 ## Portfolio og journal
 

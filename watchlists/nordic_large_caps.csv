@@ -1,0 +1,9 @@
+ticker,company,country,exchange,theme,liquidity_tier
+EQNR.OL,Equinor,Norway,Oslo,Energy,high
+DNB.OL,DNB Bank,Norway,Oslo,Financials,high
+VOLV-B.ST,Volvo B,Sweden,Stockholm,Industrials,high
+INVE-B.ST,Investor B,Sweden,Stockholm,Financials,high
+NOVO-B.CO,Novo Nordisk B,Denmark,Copenhagen,Healthcare,high
+DSV.CO,DSV,Denmark,Copenhagen,Logistics,high
+NOKIA.HE,Nokia,Finland,Helsinki,Technology,high
+KNEBV.HE,Kone,Finland,Helsinki,Industrials,high

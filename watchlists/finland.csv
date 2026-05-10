@@ -1,0 +1,6 @@
+ticker,company,country,exchange,theme,liquidity_tier
+NOKIA.HE,Nokia,Finland,Helsinki,Technology,high
+KNEBV.HE,Kone,Finland,Helsinki,Industrials,mid
+STERV.HE,Stora Enso R,Finland,Helsinki,Materials,mid
+UPM.HE,UPM-Kymmene,Finland,Helsinki,Materials,mid
+FORTUM.HE,Fortum,Finland,Helsinki,Utilities,mid

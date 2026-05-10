@@ -1,0 +1,6 @@
+ticker,company,country,exchange,theme,liquidity_tier
+EQNR.OL,Equinor,Norway,Oslo,Energy,high
+KOG.OL,Kongsberg Gruppen,Norway,Oslo,Defense,high
+NHY.OL,Norsk Hydro,Norway,Oslo,Materials,high
+MOWI.OL,Mowi,Norway,Oslo,Consumer,mid
+NOD.OL,Nordic Semiconductor,Norway,Oslo,Semiconductors,mid

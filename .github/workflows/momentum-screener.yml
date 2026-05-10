@@ -12,6 +12,20 @@ on:
           - usa
           - nordic
           - global
+      nordic_universe:
+        description: "Nordic universe"
+        required: false
+        default: "large_caps"
+        type: choice
+        options:
+          - large_caps
+          - momentum
+          - norway
+          - sweden
+          - denmark
+          - finland
+          - small_caps
+          - all
       rescan_type:
         description: "Run type"
         required: true
@@ -33,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUN_MARKET: ${{ github.event.inputs.market || 'usa' }}
+      NORDIC_UNIVERSE: ${{ github.event.inputs.nordic_universe || 'large_caps' }}
       RUN_TYPE: ${{ github.event.inputs.rescan_type || 'open' }}
 
     steps:
@@ -70,6 +85,7 @@ jobs:
                 --run-type "$RUN_TYPE" \
                 --source "$source" \
                 --input "$input_path" \
+                --nordic-universe "$NORDIC_UNIVERSE" \
                 --outdir "$outdir" \
                 --performance-outdir reports/performance \
                 --recommendation-log data/recommendation_log.csv
@@ -79,6 +95,7 @@ jobs:
                 --run-type "$RUN_TYPE" \
                 --source "$source" \
                 --limit 25 \
+                --nordic-universe "$NORDIC_UNIVERSE" \
                 --outdir "$outdir" \
                 --performance-outdir reports/performance \
                 --recommendation-log data/recommendation_log.csv
@@ -100,10 +117,10 @@ jobs:
           else
             if [ "$RUN_MARKET" = "global" ]; then
               run_market usa reports/usa yahoo-expanded
-              run_market nordic reports/nordic watchlist watchlists/nordic_watchlist.csv
+              run_market nordic reports/nordic watchlist
               combine_global_brief
             elif [ "$RUN_MARKET" = "nordic" ]; then
-              run_market nordic reports/nordic watchlist watchlists/nordic_watchlist.csv
+              run_market nordic reports/nordic watchlist
             else
               run_market usa reports/usa yahoo-expanded
             fi

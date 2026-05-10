@@ -1,0 +1,6 @@
+ticker,company,country,exchange,theme,liquidity_tier
+VOLV-B.ST,Volvo B,Sweden,Stockholm,Industrials,high
+SAAB-B.ST,Saab B,Sweden,Stockholm,Defense,high
+ERIC-B.ST,Ericsson B,Sweden,Stockholm,Technology,high
+EVO.ST,Evolution,Sweden,Stockholm,Gaming,mid
+INVE-B.ST,Investor B,Sweden,Stockholm,Financials,high
