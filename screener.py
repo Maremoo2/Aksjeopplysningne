@@ -1358,8 +1358,8 @@ def _best_next_action(
     personal_fit_label = str(row.get("personal_fit_label", "")).strip()
     day_change_pct = as_float(row.get("day_change_pct"))
     is_red_name = day_change_pct is not None and day_change_pct < 0
-    near_high = as_float(row.get("distance_from_high_pct"))
-    is_near_high = near_high is not None and near_high >= NEAR_HIGH_DISTANCE_THRESHOLD_PCT
+    distance_from_high_pct = as_float(row.get("distance_from_high_pct"))
+    is_near_high = distance_from_high_pct is not None and distance_from_high_pct >= NEAR_HIGH_DISTANCE_THRESHOLD_PCT
     is_green = day_change_pct is not None and day_change_pct > 0
     is_above_vwap = last is not None and vwap is not None and last > vwap
     is_a1_strength = bucket == "A1" and is_green and is_above_vwap and is_near_high
@@ -2213,8 +2213,8 @@ def format_markdown_report(df: pd.DataFrame) -> str:
     if "error" in df.columns:
         error_rows = df[df["error"].astype(str).str.strip() != ""]
         error_records = [
-            {"ticker": ticker, "error": error}
-            for ticker, error in zip(error_rows.get("ticker", pd.Series(dtype=str)), error_rows["error"], strict=False)
+            {"ticker": str(row.get("ticker", "")), "error": str(row.get("error", ""))}
+            for _, row in error_rows.iterrows()
         ]
         errors = summarize_ticker_errors(error_records)
     else:
