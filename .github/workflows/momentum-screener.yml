@@ -90,7 +90,7 @@ jobs:
 
           combine_global_brief() {
             python - <<'PY'
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 import json
 import os
@@ -100,11 +100,11 @@ usa_shareable = sorted((root / "usa" / "shareable").glob("trading_brief_*.md"))
 nordic_shareable = sorted((root / "nordic" / "shareable").glob("trading_brief_*.md"))
 global_dir = root / "global"
 global_dir.mkdir(parents=True, exist_ok=True)
-stamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M")
 brief_path = global_dir / f"trading_brief_global_{stamp}.md"
 json_path = global_dir / f"trading_brief_global_{stamp}.json"
 parts = ["# Global Trading Brief", "", "Market: Global", f"Run type: {os.environ.get('RUN_TYPE', 'manual').title()}"]
-payload = {"market": "GLOBAL", "generated_at": datetime.utcnow().isoformat(), "briefs": []}
+payload = {"market": "GLOBAL", "generated_at": datetime.now(UTC).isoformat(), "briefs": []}
 
 for label, candidates in (("USA", usa_shareable), ("Nordic", nordic_shareable)):
     if not candidates:
