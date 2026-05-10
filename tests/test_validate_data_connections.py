@@ -81,7 +81,7 @@ class ValidateDataConnectionsTests(unittest.TestCase):
 
     @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
     @patch("scripts.validate_data_connections.requests.get")
-    def test_empty_snapshots_error_includes_http_status_and_body(self, mock_get, mock_resolve) -> None:
+    def test_empty_snapshots_error_reports_no_usable_snapshots(self, mock_get, mock_resolve) -> None:
         mock_resolve.return_value = resolve_alpaca_credentials(
             {"ALPACA_API_KEY": "key", "ALPACA_SECRET_KEY": "secret"}
         )
@@ -89,10 +89,8 @@ class ValidateDataConnectionsTests(unittest.TestCase):
         result = validate_data_connections._check_alpaca_provider()
         self.assertEqual(result["status"], "FAIL")
         error_text = result["errors"][0]
-        self.assertIn("HTTP 200", error_text)
-        self.assertIn("snapshot", error_text)
-        self.assertIn("http_status", result["details"])
-        self.assertIn("snapshot_count", result["details"])
+        self.assertIn("no usable snapshots", error_text.lower())
+        self.assertIn("snapshot_keys_found", result["details"])
 
     @patch("scripts.validate_data_connections.resolve_alpaca_credentials")
     @patch("scripts.validate_data_connections.requests.get")

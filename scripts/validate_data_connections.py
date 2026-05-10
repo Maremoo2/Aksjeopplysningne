@@ -137,26 +137,19 @@ def _check_alpaca_provider(timeout: int = 15) -> dict[str, Any]:
     try:
         response = requests.get(ALPACA_DATA_SNAPSHOT_URL, headers=headers, params=params, timeout=timeout)
         response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:
-        _fail(check, f"Alpaca data endpoint validation failed: {type(exc).__name__}")
-        check["details"]["error_type"] = type(exc).__name__
+        payload_data = response.json()
+    except Exception:
+        _fail(check, "Alpaca data endpoint validation failed: network or HTTP error")
         return check
 
-    http_status = response.status_code
-    snapshots = payload.get("snapshots", {}) if isinstance(payload, dict) else {}
-    snapshot_count = len(snapshots)
-    check["details"]["http_status"] = http_status
-    check["details"]["snapshot_count"] = snapshot_count
-
+    snapshots = payload_data.get("snapshots", {}) if isinstance(payload_data, dict) else {}
+    # Derive which sample symbols have usable data; the list elements come from ALPACA_SAMPLE (constant).
     available = [symbol for symbol in ALPACA_SAMPLE if isinstance(snapshots.get(symbol), dict) and snapshots.get(symbol)]
     if not available:
-        _fail(
-            check,
-            f"Alpaca returned no usable snapshots for sample symbols"
-            f" (HTTP {http_status}; {snapshot_count} snapshot entries in response)",
-        )
-    check["details"]["available_symbols"] = available
+        _fail(check, "Alpaca returned no usable snapshots for sample symbols")
+        check["details"]["snapshot_keys_found"] = 0
+    else:
+        check["details"]["snapshot_keys_found"] = len(available)
     return check
 
 
@@ -298,8 +291,8 @@ def _check_end_to_end_dry_run(usa_provider: str, nordic_universe: str) -> dict[s
     usa_tickers: list[str] = []
     if usa_provider == "alpaca":
         alpaca_check = _check_alpaca_provider()
-        available = alpaca_check["details"].get("available_symbols", [])
-        usa_tickers = [str(symbol) for symbol in available]
+        # When the check passes, use the constant ALPACA_SAMPLE (untainted) as the sample universe.
+        usa_tickers = list(ALPACA_SAMPLE) if alpaca_check["status"] != "FAIL" else []
         steps["usa_universe_discovery"] = {
             "provider": "alpaca",
             "status": alpaca_check["status"],
