@@ -125,6 +125,39 @@ class DataSourceBehaviorTests(unittest.TestCase):
 
             self.assertTrue(any(Path(tmp_dir).glob("momentum_report_*.csv")))
 
+    def test_main_preserves_score_column_when_all_watchlist_rows_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            args = argparse.Namespace(
+                input="watchlist.csv",
+                outdir=tmp_dir,
+                source="watchlist",
+                limit=25,
+                min_price=2.0,
+                min_market_cap=500_000_000.0,
+                min_volume=1_000_000.0,
+                market="nordic",
+                run_type="manual",
+                performance_outdir=tmp_dir,
+                recommendation_log=str(Path(tmp_dir) / "recommendation_log.csv"),
+                nordic_universe="large_caps",
+                data_sources_config=str(Path(tmp_dir) / "data_sources.yaml"),
+            )
+
+            def _assert_score_column(frame, *_args, **_kwargs):
+                self.assertIn("score", frame.columns)
+                return frame
+
+            with (
+                patch.object(screener, "parse_args", return_value=args),
+                patch.object(screener, "score_stock", return_value={"ticker": "EQNR.OL", "category": "", "error": "No data"}),
+                patch.object(screener, "build_regime_report", return_value=screener._build_market_regime_fallback()),
+                patch.object(screener, "enrich_with_strategy", side_effect=lambda frame: frame),
+                patch.object(screener, "enrich_with_intraday_assistant", side_effect=_assert_score_column),
+                patch.object(screener, "format_markdown_report", return_value="# Empty\n"),
+                patch.object(screener, "format_shareable_report", return_value="# Brief\n"),
+            ):
+                screener.main()
+
 
 if __name__ == "__main__":
     unittest.main()

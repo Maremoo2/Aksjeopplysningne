@@ -2325,6 +2325,10 @@ def main() -> None:
             rows.append({"ticker": item.ticker, "category": item.category, "error": str(exc)})
 
     df = pd.DataFrame(rows)
+    if "classification" not in df.columns:
+        df = df.assign(classification="", score=0, reasons="", day_change_pct=0, day_change_source="")
+    elif "score" not in df.columns:
+        df = df.assign(score=0)
     if "score" in df.columns:
         df = df.sort_values(by="score", ascending=False, na_position="last")
 
