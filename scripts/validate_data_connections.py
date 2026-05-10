@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from datetime import datetime
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +12,16 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import performance_review
 import recommendation_tracker
 import screener
 from strategy_engine import enrich_with_strategy
 from utils.alpaca_credentials import resolve_alpaca_credentials
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "reports" / "data_quality"
 ALPACA_DATA_SNAPSHOT_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
 NORDIC_UNIVERSE_FILES = {
@@ -377,7 +381,7 @@ def build_validation_payload(usa_provider: str, nordic_universe: str) -> dict[st
         next_steps.append("No action required.")
 
     return {
-        "generated_at_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "overall_status": overall_status,
         "checks": checks,
         "warnings": warnings,
@@ -439,7 +443,7 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     payload = build_validation_payload(args.usa_data_provider, args.nordic_universe)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M")
     md_path = outdir / f"data_connection_validation_{timestamp}.md"
     json_path = outdir / f"data_connection_validation_{timestamp}.json"
 

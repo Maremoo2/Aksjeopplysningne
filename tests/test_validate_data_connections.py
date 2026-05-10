@@ -93,7 +93,29 @@ class ValidateDataConnectionsTests(unittest.TestCase):
                 }
             }
         )
-        payload = validate_data_connections.build_validation_payload("yahoo", "all")
+        with (
+            patch.object(
+                validate_data_connections,
+                "_check_yahoo_screeners",
+                return_value={"name": "Yahoo", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_yahoo_fallback",
+                return_value={"name": "Yahoo fallback", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_nordic_universes",
+                return_value={"name": "Nordic", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+            patch.object(
+                validate_data_connections,
+                "_check_end_to_end_dry_run",
+                return_value={"name": "Dry run", "status": "PASS", "warnings": [], "errors": [], "details": {}},
+            ),
+        ):
+            payload = validate_data_connections.build_validation_payload("yahoo", "all")
         markdown = validate_data_connections.render_validation_markdown(payload)
         blob = f"{markdown}\n{payload}"
         self.assertNotIn(secret_value, blob)
