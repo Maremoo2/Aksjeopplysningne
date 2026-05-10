@@ -896,7 +896,6 @@ def _action_label(
     chase_risk = str(row.get("chase_risk", ""))
     last = as_float(row.get("last"))
     vwap = as_float(row.get("vwap"))
-    entry_high = as_float(row.get("preferred_entry_high"))
     spread_bps = as_float(row.get("spread_bps"))
     categories = _row_exposure_categories(row)
     _, sector_strength = _primary_sector_strength(categories, regime_report)
@@ -912,7 +911,7 @@ def _action_label(
         return "AVOID"
     if regime in {"Risk-off", "Panic"} and sector_strength == "Weak":
         return "AVOID"
-    if bucket == "A2" or (entry_high is not None and last is not None and last > entry_high):
+    if bucket == "A2":
         return "WAIT PULLBACK"
     if (
         bucket == "A1"
