@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,8 +12,6 @@ from typing import Any
 import pandas as pd
 import requests
 import yfinance as yf
-
-import os
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -39,7 +38,8 @@ REQUIRED_NORDIC_COLUMNS = {"ticker", "company", "country", "exchange", "theme", 
 VALID_NORDIC_SUFFIXES = (".OL", ".ST", ".CO", ".HE")
 ALPACA_SAMPLE = ("AAPL", "MSFT", "NVDA")
 AVAILABLE_STATUS = {"PASS": 0, "WARN": 1, "FAIL": 2}
-_ALPACA_ENV_VARS = ("ALPACA_API_KEY", "ALPACA_KEY", "ALPACA_SECRET_KEY", "ALPACA_SECRET")
+_ALPACA_API_KEY_ENV_VARS = ("ALPACA_API_KEY", "ALPACA_KEY")
+_ALPACA_SECRET_KEY_ENV_VARS = ("ALPACA_SECRET_KEY", "ALPACA_SECRET")
 
 
 def _worst_status(statuses: list[str]) -> str:
@@ -110,10 +110,10 @@ def _check_yahoo_screeners(limit: int) -> dict[str, Any]:
 
 
 def _alpaca_credential_env_var_names(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Return which env-var names hold Alpaca credentials (checks presence only, never reads values)."""
+    """Return which env-var names hold Alpaca credentials (checks key presence only, never reads values)."""
     source = env if env is not None else os.environ
-    api_var = next((n for n in ("ALPACA_API_KEY", "ALPACA_KEY") if source.get(n)), "not_configured")
-    secret_var = next((n for n in ("ALPACA_SECRET_KEY", "ALPACA_SECRET") if source.get(n)), "not_configured")
+    api_var = next((n for n in _ALPACA_API_KEY_ENV_VARS if n in source), "not_configured")
+    secret_var = next((n for n in _ALPACA_SECRET_KEY_ENV_VARS if n in source), "not_configured")
     return {"api_key_env_var": api_var, "secret_key_env_var": secret_var}
 
 
