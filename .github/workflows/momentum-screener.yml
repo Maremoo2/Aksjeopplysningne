@@ -89,36 +89,7 @@ jobs:
           }
 
           combine_global_brief() {
-            python - <<'PY'
-from datetime import UTC, datetime
-from pathlib import Path
-import json
-import os
-
-root = Path("reports")
-usa_shareable = sorted((root / "usa" / "shareable").glob("trading_brief_*.md"))
-nordic_shareable = sorted((root / "nordic" / "shareable").glob("trading_brief_*.md"))
-global_dir = root / "global"
-global_dir.mkdir(parents=True, exist_ok=True)
-stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M")
-brief_path = global_dir / f"trading_brief_global_{stamp}.md"
-json_path = global_dir / f"trading_brief_global_{stamp}.json"
-parts = ["# Global Trading Brief", "", "Market: Global", f"Run type: {os.environ.get('RUN_TYPE', 'manual').title()}"]
-payload = {"market": "GLOBAL", "generated_at": datetime.now(UTC).isoformat(), "briefs": []}
-
-for label, candidates in (("USA", usa_shareable), ("Nordic", nordic_shareable)):
-    if not candidates:
-        continue
-    latest = candidates[-1]
-    text = latest.read_text(encoding="utf-8").strip()
-    parts.extend([f"## {label}", "", text, ""])
-    payload["briefs"].append({"market": label, "path": str(latest), "content": text})
-
-brief_path.write_text("\n".join(parts).strip() + "\n", encoding="utf-8")
-json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-print(f"Saved global trading brief: {brief_path}")
-print(f"Saved global trading brief JSON: {json_path}")
-PY
+            python scripts/combine_global_brief.py --reports-root reports --run-type "$RUN_TYPE"
           }
 
           mkdir -p reports/performance reports/intraday reports/regime
