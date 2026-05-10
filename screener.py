@@ -872,8 +872,11 @@ def _market_proxy(categories: tuple[str, ...]) -> str:
     return "QQQ"
 
 
-def _personal_theme_fit(row: dict[str, Any] | pd.Series, categories: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
-    matches = tuple(category for category in PERSONAL_THEME_CATEGORIES if category in categories)
+def _personal_theme_fit(
+    row: dict[str, Any] | pd.Series,
+    exposure_categories: tuple[str, ...],
+) -> tuple[str, tuple[str, ...]]:
+    matches = tuple(category for category in PERSONAL_THEME_CATEGORIES if category in exposure_categories)
     if matches:
         return ("Good fit", matches)
 
@@ -1405,6 +1408,11 @@ def format_shareable_report(
         lines.append("- (none)")
     else:
         for idx, (_, row) in enumerate(focus.iterrows(), start=1):
+            last_value = as_float(row.get("last"))
+            vwap_value = as_float(row.get("vwap"))
+            vwap_status = "n/a"
+            if last_value is not None and vwap_value is not None:
+                vwap_status = "above" if last_value > vwap_value else "below"
             lines.extend(
                 [
                     f"### {idx}. {row.get('ticker', '')} — {_display_text(row.get('action_label'), 'WATCH')}",
@@ -1413,7 +1421,7 @@ def format_shareable_report(
                         f"priority {_display_number(row.get('priority_score'))} | "
                         f"personal fit {_display_text(row.get('personal_fit_label'), 'n/a')} | "
                         f"rel vol {_display_number(row.get('volume_ratio'), decimals=1, suffix='x')} | "
-                        f"VWAP {'above' if as_float(row.get('last')) is not None and as_float(row.get('vwap')) is not None and as_float(row.get('last')) > as_float(row.get('vwap')) else 'below'} | "
+                        f"VWAP {vwap_status} | "
                         f"distance from high {_display_number(row.get('distance_from_high_pct'), decimals=2, suffix='%')} | "
                         f"chase {_display_text(row.get('chase_risk'), 'n/a')} | "
                         f"spread {_display_number(row.get('spread_bps'), decimals=0, suffix=' bps')}"

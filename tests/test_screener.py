@@ -265,6 +265,63 @@ class ScreenerTests(unittest.TestCase):
         self.assertEqual(with_overlap.loc[0, "personal_fit_label"], "Good fit")
         self.assertEqual(with_overlap.loc[0, "portfolio_overlap"], "AI / Datacenter")
 
+    def test_enrich_with_intraday_assistant_assigns_medium_and_poor_personal_fit_labels(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "ticker": "DDOG",
+                    "score": 58,
+                    "classification": "B-list",
+                    "setup_bucket": "B-list",
+                    "setup": "continuation",
+                    "last": 100.0,
+                    "vwap": 99.0,
+                    "preferred_entry_low": 98.0,
+                    "preferred_entry_high": 99.0,
+                    "volume_ratio": 1.8,
+                    "distance_from_high_pct": -3.0,
+                    "day_change_pct": 3.2,
+                    "spread_bps": 12.0,
+                    "earnings_warning": "None",
+                    "chase_risk": "Low",
+                    "sector": "Technology",
+                    "industry": "Software - Infrastructure",
+                    "thematic_tags": "Cloud, AI Software",
+                },
+                {
+                    "ticker": "KO",
+                    "score": 32,
+                    "classification": "C-list",
+                    "setup_bucket": "C-list",
+                    "setup": "pullback",
+                    "last": 60.0,
+                    "vwap": 61.0,
+                    "preferred_entry_low": 59.0,
+                    "preferred_entry_high": 60.0,
+                    "volume_ratio": 0.9,
+                    "distance_from_high_pct": -8.0,
+                    "day_change_pct": -1.1,
+                    "spread_bps": 8.0,
+                    "earnings_warning": "None",
+                    "chase_risk": "Low",
+                    "sector": "Consumer Defensive",
+                    "industry": "Beverages - Non-Alcoholic",
+                    "thematic_tags": "Consumer Staples",
+                },
+            ]
+        )
+        regime_report = {
+            "market_regime": "Risk-on",
+            "momentum_odds": "Favorable",
+            "sector_strength": {"SOXX": "Strong", "AI Software": "Strong", "Crypto Miners": "Neutral"},
+        }
+
+        enriched = screener.enrich_with_intraday_assistant(frame, regime_report, [])
+
+        personal_fit_by_ticker = dict(zip(enriched["ticker"], enriched["personal_fit_label"]))
+        self.assertEqual(personal_fit_by_ticker["DDOG"], "Medium fit")
+        self.assertEqual(personal_fit_by_ticker["KO"], "Poor fit")
+
 
 if __name__ == "__main__":
     unittest.main()
